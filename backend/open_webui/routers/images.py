@@ -703,8 +703,8 @@ async def image_generations(
 
             for image in res:
                 if image_url := image.get("url", None):
-                    full_image_url = f"{request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL}image_url"
-                    image_data, content_type = load_url_image_data(image_url, headers)
+                    full_image_url = f"{request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL}{image_url}"
+                    image_data, content_type = load_url_image_data(full_image_url, headers)
                 else:
                     image_data, content_type = load_b64_image_data(image["b64_json"])
 
