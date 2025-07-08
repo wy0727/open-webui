@@ -619,7 +619,7 @@
 					</div>
 				{:else if config?.engine === 'dartmouth'}
 					<div>
-						<div class=" mb-1.5 text-sm font-medium">{'Magic API Config'}</div>
+						<div class=" mb-1.5 text-sm font-medium">Magic API Config</div>
 
 						<div class="flex gap-2 mb-1">
 							<input
