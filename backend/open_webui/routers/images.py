@@ -655,6 +655,7 @@ async def image_generations(
                 )
                 images.append({"url": url})
             return images
+
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == "dartmouth":
             headers = {}
             headers["Authorization"] = (
@@ -706,6 +707,7 @@ async def image_generations(
                 url = upload_image(request, image_data, content_type, data, user)
                 images.append({"url": url})
             return images
+
         elif (
             request.app.state.config.IMAGE_GENERATION_ENGINE == "automatic1111"
             or request.app.state.config.IMAGE_GENERATION_ENGINE == ""
