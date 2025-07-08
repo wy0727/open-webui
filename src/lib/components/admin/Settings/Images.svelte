@@ -305,7 +305,7 @@
 							<option value="comfyui">{$i18n.t('ComfyUI')}</option>
 							<option value="automatic1111">{$i18n.t('Automatic1111')}</option>
 							<option value="gemini">{$i18n.t('Gemini')}</option>
-							<option value="dartmouth">{'my magic api'}</option>
+							<option value="dartmouth">my magic api</option>
 						</select>
 					</div>
 				</div>
