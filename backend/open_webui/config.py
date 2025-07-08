@@ -2845,6 +2845,18 @@ IMAGES_OPENAI_API_KEY = PersistentConfig(
     os.getenv("IMAGES_OPENAI_API_KEY", OPENAI_API_KEY),
 )
 
+IMAGES_DARTMOUTH_API_BASE_URL = PersistentConfig(
+    "IMAGES_DARTMOUTH_API_BASE_URL",
+    "image_generation.dartmouth.api_base_url",
+    os.getenv("IMAGES_DARTMOUTH_API_BASE_URL", ""),
+)
+
+IMAGES_DARTMOUTH_API_KEY = PersistentConfig(
+    "IMAGES_DARTMOUTH_API_KEY",
+    "image_generation.dartmouth.api_key",
+    os.getenv("IMAGES_DARTMOUTH_API_KEY", ""),
+)
+
 IMAGES_GEMINI_API_BASE_URL = PersistentConfig(
     "IMAGES_GEMINI_API_BASE_URL",
     "image_generation.gemini.api_base_url",

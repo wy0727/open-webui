@@ -59,12 +59,21 @@ async def get_config(request: Request, user=Depends(get_admin_user)):
             "GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
             "GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
         },
+        "dartmouth": {
+            "DARTMOUTH_API_BASE_URL": request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL,
+            "DARTMOUTH_API_KEY": request.app.state.config.IMAGES_DARTMOUTH_API_KEY,
+        },
     }
 
 
 class OpenAIConfigForm(BaseModel):
     OPENAI_API_BASE_URL: str
     OPENAI_API_KEY: str
+
+
+class DartmouthAPIConfigForm(BaseModel):
+    DARTMOUTH_API_BASE_URL: str
+    DARTMOUTH_API_KEY: str
 
 
 class Automatic1111ConfigForm(BaseModel):
@@ -95,6 +104,7 @@ class ConfigForm(BaseModel):
     automatic1111: Automatic1111ConfigForm
     comfyui: ComfyUIConfigForm
     gemini: GeminiConfigForm
+    dartmouth: DartmouthAPIConfigForm
 
 
 @router.post("/config/update")
@@ -141,6 +151,18 @@ async def update_config(
         else None
     )
 
+    request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL = (
+        form_data.dartmouth.DARTMOUTH_API_BASE_URL
+        if form_data.dartmouth.DARTMOUTH_API_BASE_URL
+        else None
+    )
+
+    request.app.state.config.IMAGES_DARTMOUTH_API_KEY = (
+        form_data.dartmouth.DARTMOUTH_API_KEY
+        if form_data.dartmouth.DARTMOUTH_API_KEY
+        else None
+    )
+
     request.app.state.config.COMFYUI_BASE_URL = (
         form_data.comfyui.COMFYUI_BASE_URL.strip("/")
     )
@@ -175,6 +197,10 @@ async def update_config(
         "gemini": {
             "GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
             "GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
+        },
+        "dartmouth": {
+            "DARTMOUTH_API_BASE_URL": request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL,
+            "DARTMOUTH_API_KEY": request.app.state.config.IMAGES_DARTMOUTH_API_KEY,
         },
     }
 
@@ -265,6 +291,12 @@ def get_image_model(request):
             if request.app.state.config.IMAGE_GENERATION_MODEL
             else ""
         )
+    elif request.app.state.config.IMAGE_GENERATION_ENGINE == "dartmouth":
+        return (
+            request.app.state.config.IMAGE_GENERATION_MODEL
+            if request.app.state.config.IMAGE_GENERATION_MODEL
+            else ""
+        )
     elif (
         request.app.state.config.IMAGE_GENERATION_ENGINE == "automatic1111"
         or request.app.state.config.IMAGE_GENERATION_ENGINE == ""
@@ -338,6 +370,10 @@ def get_models(request: Request, user=Depends(get_verified_user)):
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == "gemini":
             return [
                 {"id": "imagen-3.0-generate-002", "name": "imagen-3.0 generate-002"},
+            ]
+        elif request.app.state.config.IMAGE_GENERATION_ENGINE == "dartmouth":
+            return [
+                {"id": "magic", "name": "magic"},
             ]
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == "comfyui":
             # TODO - get models from comfyui
@@ -617,6 +653,57 @@ async def image_generations(
                     form_data.model_dump(exclude_none=True),
                     user,
                 )
+                images.append({"url": url})
+            return images
+        elif request.app.state.config.IMAGE_GENERATION_ENGINE == "dartmouth":
+            headers = {}
+            headers["Authorization"] = (
+                f"Bearer {request.app.state.config.IMAGES_DARTMOUTH_API_KEY}"
+            )
+            headers["Content-Type"] = "application/json"
+
+            if ENABLE_FORWARD_USER_INFO_HEADERS:
+                headers["X-OpenWebUI-User-Name"] = user.name
+                headers["X-OpenWebUI-User-Id"] = user.id
+                headers["X-OpenWebUI-User-Email"] = user.email
+                headers["X-OpenWebUI-User-Role"] = user.role
+
+            data = {
+                "prompt": form_data.prompt,
+                "n": (
+                    form_data.n
+                    if form_data.n
+                    else 1
+                ),
+                "size": (
+                    form_data.size
+                    if form_data.size
+                    else request.app.state.config.IMAGE_SIZE
+                ),
+
+            }
+
+            # Use asyncio.to_thread for the requests.post call
+            r = await asyncio.to_thread(
+                requests.post,
+                url=f"{request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL}/api/v1/images/generations",
+                json=data,
+                headers=headers,
+            )
+
+            r.raise_for_status()
+            res = r.json()
+
+            images = []
+
+            for image in res["data"]:
+                if image_url := image.get("url", None):
+                    full_image_url = f"{request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL}image_url"
+                    image_data, content_type = load_url_image_data(image_url, headers)
+                else:
+                    image_data, content_type = load_b64_image_data(image["b64_json"])
+
+                url = upload_image(request, image_data, content_type, data, user)
                 images.append({"url": url})
             return images
         elif (
