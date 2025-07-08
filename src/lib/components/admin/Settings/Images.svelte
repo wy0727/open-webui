@@ -268,6 +268,9 @@
 										} else if (config.engine === 'gemini' && config.gemini.GEMINI_API_KEY === '') {
 											toast.error($i18n.t('Gemini API Key is required.'));
 											config.enabled = false;
+										} else if (config.engine === 'dartmouth' && config.dartmouth.DARTMOUTH_API_KEY === '') {
+											toast.error('Magic API Key is required.');
+											config.enabled = false;
 										}
 									}
 
@@ -302,6 +305,7 @@
 							<option value="comfyui">{$i18n.t('ComfyUI')}</option>
 							<option value="automatic1111">{$i18n.t('Automatic1111')}</option>
 							<option value="gemini">{$i18n.t('Gemini')}</option>
+							<option value="dartmouth">{'my magic api'}</option>
 						</select>
 					</div>
 				</div>
@@ -610,6 +614,24 @@
 							<SensitiveInput
 								placeholder={$i18n.t('API Key')}
 								bind:value={config.openai.OPENAI_API_KEY}
+							/>
+						</div>
+					</div>
+				{:else if config?.engine === 'dartmouth'}
+					<div>
+						<div class=" mb-1.5 text-sm font-medium">{'Magic API Config'}</div>
+
+						<div class="flex gap-2 mb-1">
+							<input
+									class="flex-1 w-full text-sm bg-transparent outline-hidden"
+									placeholder={$i18n.t('API Base URL')}
+									bind:value={config.dartmouth.DARTMOUTH_API_BASE_URL}
+									required
+							/>
+
+							<SensitiveInput
+									placeholder={$i18n.t('API Key')}
+									bind:value={config.dartmouth.DARTMOUTH_API_KEY}
 							/>
 						</div>
 					</div>
