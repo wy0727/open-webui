@@ -697,7 +697,7 @@ async def image_generations(
 
             images = []
 
-            for image in res["data"]:
+            for image in res:
                 if image_url := image.get("url", None):
                     full_image_url = f"{request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL}image_url"
                     image_data, content_type = load_url_image_data(image_url, headers)
