@@ -679,7 +679,11 @@ async def image_generations(
                 "size": (
                     form_data.size
                     if form_data.size
-                    else request.app.state.config.IMAGE_SIZE
+                    else (
+                        request.app.state.config.IMAGE_SIZE
+                        if request.app.state.config.IMAGE_SIZE in ["1024x1024", "1024x1536", "1536x1024"]
+                        else "auto"
+                    )
                 ),
 
             }
