@@ -1,207 +1,386 @@
 import asyncio
 import base64
+import uuid
 import io
 import json
 import logging
 import mimetypes
+import os
 import re
-from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from open_webui.config import CACHE_DIR
-from open_webui.constants import ERROR_MESSAGES
-from open_webui.env import ENABLE_FORWARD_USER_INFO_HEADERS, SRC_LOG_LEVELS
-from open_webui.routers.files import upload_file
-from open_webui.utils.auth import get_admin_user, get_verified_user
-from open_webui.utils.images.comfyui import (
-    ComfyUIGenerateImageForm,
-    ComfyUIWorkflow,
-    comfyui_generate_image,
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Request,
+    UploadFile,
 )
+from fastapi.responses import FileResponse
+from loguru import logger as log
 from pydantic import BaseModel
+from starlette.status import HTTP_400_BAD_REQUEST as BAD_REQUEST
 
-log = logging.getLogger(__name__)
-log.setLevel(SRC_LOG_LEVELS["IMAGES"])
+from open_webui.config import SRC_LOG_LEVELS
+from open_webui.constants import ERROR_MESSAGES
+from open_webui.env import (
+    ENABLE_FORWARD_USER_INFO_HEADERS,
+    TEMPDIR_PATH,
+)
+from open_webui.main import (
+    get_admin_user,
+    get_verified_user,
+)
+from open_webui.routers.files import (
+    delete_file_content_by_id,
+    get_file_content_by_id,
+    get_files,
+    upload_file_handler,
+)
+from open_webui.utils.misc import cors_proxy
 
-IMAGE_CACHE_DIR = CACHE_DIR / "image" / "generations"
-IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
+from .comfyui import (
+    ComfyUICreateImageForm,
+    ComfyUIEditImageForm,
+    ComfyUIWorkflow,
+    comfyui_create_image,
+    comfyui_edit_image,
+    comfyui_upload_image,
+)
+from .users import include_user_info_headers
 
 router = APIRouter()
 
-
-@router.get("/config")
-async def get_config(request: Request, user=Depends(get_admin_user)):
-    return {
-        "enabled": request.app.state.config.ENABLE_IMAGE_GENERATION,
-        "engine": request.app.state.config.IMAGE_GENERATION_ENGINE,
-        "prompt_generation": request.app.state.config.ENABLE_IMAGE_PROMPT_GENERATION,
-        "openai": {
-            "OPENAI_API_BASE_URL": request.app.state.config.IMAGES_OPENAI_API_BASE_URL,
-            "OPENAI_API_KEY": request.app.state.config.IMAGES_OPENAI_API_KEY,
-        },
-        "automatic1111": {
-            "AUTOMATIC1111_BASE_URL": request.app.state.config.AUTOMATIC1111_BASE_URL,
-            "AUTOMATIC1111_API_AUTH": request.app.state.config.AUTOMATIC1111_API_AUTH,
-            "AUTOMATIC1111_CFG_SCALE": request.app.state.config.AUTOMATIC1111_CFG_SCALE,
-            "AUTOMATIC1111_SAMPLER": request.app.state.config.AUTOMATIC1111_SAMPLER,
-            "AUTOMATIC1111_SCHEDULER": request.app.state.config.AUTOMATIC1111_SCHEDULER,
-        },
-        "comfyui": {
-            "COMFYUI_BASE_URL": request.app.state.config.COMFYUI_BASE_URL,
-            "COMFYUI_API_KEY": request.app.state.config.COMFYUI_API_KEY,
-            "COMFYUI_WORKFLOW": request.app.state.config.COMFYUI_WORKFLOW,
-            "COMFYUI_WORKFLOW_NODES": request.app.state.config.COMFYUI_WORKFLOW_NODES,
-        },
-        "gemini": {
-            "GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
-            "GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
-        },
-        "dartmouth": {
-            "DARTMOUTH_API_BASE_URL": request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL,
-            "DARTMOUTH_API_KEY": request.app.state.config.IMAGES_DARTMOUTH_API_KEY,
-        },
-    }
+# Initialize logger for the current module
+log = logging.getLogger(__name__)
+log.setLevel(SRC_LOG_LEVELS["IMAGES"])
 
 
-class OpenAIConfigForm(BaseModel):
-    OPENAI_API_BASE_URL: str
-    OPENAI_API_KEY: str
+ENABLE_TEMPORAL_IO = os.getenv("ENABLE_TEMPORAL_IO", "false").lower() == "true"
 
 
-class DartmouthAPIConfigForm(BaseModel):
-    DARTMOUTH_API_BASE_URL: str
-    DARTMOUTH_API_KEY: str
+def set_image_model(request: Request, model: str):
+    log.info(f"Setting image model to {model}")
+    request.app.state.config.IMAGE_GENERATION_MODEL = model
+    if request.app.state.config.IMAGE_GENERATION_ENGINE in ["", "automatic1111"]:
+        api_auth = get_automatic1111_api_auth(request)
+
+        try:
+            r = requests.get(
+                url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/options",
+                headers={"authorization": api_auth},
+            )
+            options = r.json()
+            if model != options["sd_model_checkpoint"]:
+                options["sd_model_checkpoint"] = model
+                r = requests.post(
+                    url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/options",
+                    json=options,
+                    headers={"authorization": api_auth},
+                )
+        except Exception as e:
+            log.debug(f"{e}")
+
+    return request.app.state.config.IMAGE_GENERATION_MODEL
 
 
-class Automatic1111ConfigForm(BaseModel):
+def get_image_model(request):
+    if request.app.state.config.IMAGE_GENERATION_ENGINE == "openai":
+        return (
+            request.app.state.config.IMAGE_GENERATION_MODEL
+            if request.app.state.config.IMAGE_GENERATION_MODEL
+            else "dall-e-2"
+        )
+    elif request.app.state.config.IMAGE_GENERATION_ENGINE == "gemini":
+        return (
+            request.app.state.config.IMAGE_GENERATION_MODEL
+            if request.app.state.config.IMAGE_GENERATION_MODEL
+            else "imagen-3.0-generate-002"
+        )
+    elif request.app.state.config.IMAGE_GENERATION_ENGINE == "comfyui":
+        return (
+            request.app.state.config.IMAGE_GENERATION_MODEL
+            if request.app.state.config.IMAGE_GENERATION_MODEL
+            else ""
+        )
+    elif request.app.state.config.IMAGE_GENERATION_ENGINE == "magic":
+        return (
+            request.app.state.config.IMAGE_GENERATION_MODEL
+            if request.app.state.config.IMAGE_GENERATION_MODEL
+            else ""
+        )
+    elif (
+        request.app.state.config.IMAGE_GENERATION_ENGINE == "automatic1111"
+        or request.app.state.config.IMAGE_GENERATION_ENGINE == ""
+    ):
+        try:
+            r = requests.get(
+                url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/options",
+                headers={"authorization": get_automatic1111_api_auth(request)},
+            )
+            options = r.json()
+            return options["sd_model_checkpoint"]
+        except Exception as e:
+            request.app.state.config.ENABLE_IMAGE_GENERATION = False
+            raise HTTPException(status_code=400, detail=ERROR_MESSAGES.DEFAULT(e))
+
+
+class ImagesConfig(BaseModel):
+    ENABLE_IMAGE_GENERATION: bool
+    ENABLE_IMAGE_PROMPT_GENERATION: bool
+
+    IMAGE_GENERATION_ENGINE: str
+    IMAGE_GENERATION_MODEL: str
+    IMAGE_SIZE: Optional[str]
+    IMAGE_STEPS: Optional[int]
+
+    IMAGES_OPENAI_API_BASE_URL: str
+    IMAGES_OPENAI_API_KEY: str
+    IMAGES_OPENAI_API_VERSION: str
+    IMAGES_OPENAI_API_PARAMS: Optional[dict | str]
+
+    # MAGIC proxy engine for image generation
+    IMAGES_MAGIC_API_BASE_URL: str
+    IMAGES_MAGIC_API_KEY: Optional[str]
+
     AUTOMATIC1111_BASE_URL: str
-    AUTOMATIC1111_API_AUTH: str
-    AUTOMATIC1111_CFG_SCALE: Optional[str | float | int]
-    AUTOMATIC1111_SAMPLER: Optional[str]
-    AUTOMATIC1111_SCHEDULER: Optional[str]
+    AUTOMATIC1111_API_AUTH: Optional[dict | str]
+    AUTOMATIC1111_PARAMS: Optional[dict | str]
 
-
-class ComfyUIConfigForm(BaseModel):
     COMFYUI_BASE_URL: str
     COMFYUI_API_KEY: str
     COMFYUI_WORKFLOW: str
     COMFYUI_WORKFLOW_NODES: list[dict]
 
+    IMAGES_GEMINI_API_BASE_URL: str
+    IMAGES_GEMINI_API_KEY: str
+    IMAGES_GEMINI_ENDPOINT_METHOD: str
 
-class GeminiConfigForm(BaseModel):
-    GEMINI_API_BASE_URL: str
-    GEMINI_API_KEY: str
+    ENABLE_IMAGE_EDIT: bool
+    IMAGE_EDIT_ENGINE: str
+    IMAGE_EDIT_MODEL: str
+    IMAGE_EDIT_SIZE: Optional[str]
+
+    IMAGES_EDIT_OPENAI_API_BASE_URL: str
+    IMAGES_EDIT_OPENAI_API_KEY: str
+    IMAGES_EDIT_OPENAI_API_VERSION: str
+
+    # MAGIC proxy engine for image editing
+    IMAGES_EDIT_MAGIC_API_BASE_URL: str
+    IMAGES_EDIT_MAGIC_API_KEY: Optional[str]
+
+    IMAGES_EDIT_GEMINI_API_BASE_URL: str
+    IMAGES_EDIT_GEMINI_API_KEY: str
+    IMAGES_EDIT_COMFYUI_BASE_URL: str
+    IMAGES_EDIT_COMFYUI_API_KEY: str
+    IMAGES_EDIT_COMFYUI_WORKFLOW: str
+    IMAGES_EDIT_COMFYUI_WORKFLOW_NODES: list[dict]
 
 
-class ConfigForm(BaseModel):
-    enabled: bool
-    engine: str
-    prompt_generation: bool
-    openai: OpenAIConfigForm
-    automatic1111: Automatic1111ConfigForm
-    comfyui: ComfyUIConfigForm
-    gemini: GeminiConfigForm
-    dartmouth: DartmouthAPIConfigForm
+@router.get("/config", response_model=ImagesConfig)
+async def get_config(request: Request, user=Depends(get_admin_user)):
+    return {
+        "ENABLE_IMAGE_GENERATION": request.app.state.config.ENABLE_IMAGE_GENERATION,
+        "ENABLE_IMAGE_PROMPT_GENERATION": request.app.state.config.ENABLE_IMAGE_PROMPT_GENERATION,
+        "IMAGE_GENERATION_ENGINE": request.app.state.config.IMAGE_GENERATION_ENGINE,
+        "IMAGE_GENERATION_MODEL": request.app.state.config.IMAGE_GENERATION_MODEL,
+        "IMAGE_SIZE": request.app.state.config.IMAGE_SIZE,
+        "IMAGE_STEPS": request.app.state.config.IMAGE_STEPS,
+        "IMAGES_OPENAI_API_BASE_URL": request.app.state.config.IMAGES_OPENAI_API_BASE_URL,
+        "IMAGES_OPENAI_API_KEY": request.app.state.config.IMAGES_OPENAI_API_KEY,
+        "IMAGES_OPENAI_API_VERSION": request.app.state.config.IMAGES_OPENAI_API_VERSION,
+        "IMAGES_OPENAI_API_PARAMS": request.app.state.config.IMAGES_OPENAI_API_PARAMS,
+        "IMAGES_MAGIC_API_BASE_URL": request.app.state.config.IMAGES_MAGIC_API_BASE_URL,
+        "IMAGES_MAGIC_API_KEY": request.app.state.config.IMAGES_MAGIC_API_KEY,
+        "AUTOMATIC1111_BASE_URL": request.app.state.config.AUTOMATIC1111_BASE_URL,
+        "AUTOMATIC1111_API_AUTH": request.app.state.config.AUTOMATIC1111_API_AUTH,
+        "AUTOMATIC1111_PARAMS": request.app.state.config.AUTOMATIC1111_PARAMS,
+        "COMFYUI_BASE_URL": request.app.state.config.COMFYUI_BASE_URL,
+        "COMFYUI_API_KEY": request.app.state.config.COMFYUI_API_KEY,
+        "COMFYUI_WORKFLOW": request.app.state.config.COMFYUI_WORKFLOW,
+        "COMFYUI_WORKFLOW_NODES": request.app.state.config.COMFYUI_WORKFLOW_NODES,
+        "IMAGES_GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
+        "IMAGES_GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
+        "IMAGES_GEMINI_ENDPOINT_METHOD": request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD,
+        "ENABLE_IMAGE_EDIT": request.app.state.config.ENABLE_IMAGE_EDIT,
+        "IMAGE_EDIT_ENGINE": request.app.state.config.IMAGE_EDIT_ENGINE,
+        "IMAGE_EDIT_MODEL": request.app.state.config.IMAGE_EDIT_MODEL,
+        "IMAGE_EDIT_SIZE": request.app.state.config.IMAGE_EDIT_SIZE,
+        "IMAGES_EDIT_OPENAI_API_BASE_URL": request.app.state.config.IMAGES_EDIT_OPENAI_API_BASE_URL,
+        "IMAGES_EDIT_OPENAI_API_KEY": request.app.state.config.IMAGES_EDIT_OPENAI_API_KEY,
+        "IMAGES_EDIT_OPENAI_API_VERSION": request.app.state.config.IMAGES_EDIT_OPENAI_API_VERSION,
+        "IMAGES_EDIT_MAGIC_API_BASE_URL": request.app.state.config.IMAGES_EDIT_MAGIC_API_BASE_URL,
+        "IMAGES_EDIT_MAGIC_API_KEY": request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY,
+        "IMAGES_EDIT_GEMINI_API_BASE_URL": request.app.state.config.IMAGES_EDIT_GEMINI_API_BASE_URL,
+        "IMAGES_EDIT_GEMINI_API_KEY": request.app.state.config.IMAGES_EDIT_GEMINI_API_KEY,
+        "IMAGES_EDIT_COMFYUI_BASE_URL": request.app.state.config.IMAGES_EDIT_COMFYUI_BASE_URL,
+        "IMAGES_EDIT_COMFYUI_API_KEY": request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY,
+        "IMAGES_EDIT_COMFYUI_WORKFLOW": request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW,
+        "IMAGES_EDIT_COMFYUI_WORKFLOW_NODES": request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES,
+    }
 
 
 @router.post("/config/update")
 async def update_config(
-    request: Request, form_data: ConfigForm, user=Depends(get_admin_user)
+    request: Request, form_data: ImagesConfig, user=Depends(get_admin_user)
 ):
-    request.app.state.config.IMAGE_GENERATION_ENGINE = form_data.engine
-    request.app.state.config.ENABLE_IMAGE_GENERATION = form_data.enabled
+    request.app.state.config.ENABLE_IMAGE_GENERATION = form_data.ENABLE_IMAGE_GENERATION
 
+    # Create Image
     request.app.state.config.ENABLE_IMAGE_PROMPT_GENERATION = (
-        form_data.prompt_generation
+        form_data.ENABLE_IMAGE_PROMPT_GENERATION
     )
+
+    request.app.state.config.IMAGE_GENERATION_ENGINE = form_data.IMAGE_GENERATION_ENGINE
+    set_image_model(request, form_data.IMAGE_GENERATION_MODEL)
+    if (
+        form_data.IMAGE_SIZE == "auto"
+        and form_data.IMAGE_GENERATION_MODEL != "gpt-image-1"
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=ERROR_MESSAGES.INCORRECT_FORMAT(
+                "  (auto is only allowed with gpt-image-1)."
+            ),
+        )
+
+    pattern = r"^\d+x\d+$"
+    if (
+        form_data.IMAGE_SIZE == "auto"
+        or form_data.IMAGE_SIZE == ""
+        or re.match(pattern, form_data.IMAGE_SIZE)
+    ):
+        request.app.state.config.IMAGE_SIZE = form_data.IMAGE_SIZE
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=ERROR_MESSAGES.INCORRECT_FORMAT("  (e.g., 512x512)."),
+        )
+
+    if form_data.IMAGE_STEPS >= 0:
+        request.app.state.config.IMAGE_STEPS = form_data.IMAGE_STEPS
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=ERROR_MESSAGES.INCORRECT_FORMAT("  (e.g., 50)."),
+        )
 
     request.app.state.config.IMAGES_OPENAI_API_BASE_URL = (
-        form_data.openai.OPENAI_API_BASE_URL
+        form_data.IMAGES_OPENAI_API_BASE_URL
     )
-    request.app.state.config.IMAGES_OPENAI_API_KEY = form_data.openai.OPENAI_API_KEY
+    request.app.state.config.IMAGES_OPENAI_API_KEY = form_data.IMAGES_OPENAI_API_KEY
+    request.app.state.config.IMAGES_OPENAI_API_VERSION = (
+        form_data.IMAGES_OPENAI_API_VERSION
+    )
+    request.app.state.config.IMAGES_OPENAI_API_PARAMS = (
+        form_data.IMAGES_OPENAI_API_PARAMS
+    )
+
+    request.app.state.config.IMAGES_MAGIC_API_BASE_URL = (
+        form_data.IMAGES_MAGIC_API_BASE_URL.strip("/")
+    )
+    request.app.state.config.IMAGES_MAGIC_API_KEY = form_data.IMAGES_MAGIC_API_KEY
+
+    request.app.state.config.AUTOMATIC1111_BASE_URL = form_data.AUTOMATIC1111_BASE_URL
+    request.app.state.config.AUTOMATIC1111_API_AUTH = form_data.AUTOMATIC1111_API_AUTH
+    request.app.state.config.AUTOMATIC1111_PARAMS = form_data.AUTOMATIC1111_PARAMS
+
+    request.app.state.config.COMFYUI_BASE_URL = form_data.COMFYUI_BASE_URL.strip("/")
+    request.app.state.config.COMFYUI_API_KEY = form_data.COMFYUI_API_KEY
+    request.app.state.config.COMFYUI_WORKFLOW = form_data.COMFYUI_WORKFLOW
+    request.app.state.config.COMFYUI_WORKFLOW_NODES = form_data.COMFYUI_WORKFLOW_NODES
 
     request.app.state.config.IMAGES_GEMINI_API_BASE_URL = (
-        form_data.gemini.GEMINI_API_BASE_URL
+        form_data.IMAGES_GEMINI_API_BASE_URL
     )
-    request.app.state.config.IMAGES_GEMINI_API_KEY = form_data.gemini.GEMINI_API_KEY
-
-    request.app.state.config.AUTOMATIC1111_BASE_URL = (
-        form_data.automatic1111.AUTOMATIC1111_BASE_URL
-    )
-    request.app.state.config.AUTOMATIC1111_API_AUTH = (
-        form_data.automatic1111.AUTOMATIC1111_API_AUTH
+    request.app.state.config.IMAGES_GEMINI_API_KEY = form_data.IMAGES_GEMINI_API_KEY
+    request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD = (
+        form_data.IMAGES_GEMINI_ENDPOINT_METHOD
     )
 
-    request.app.state.config.AUTOMATIC1111_CFG_SCALE = (
-        float(form_data.automatic1111.AUTOMATIC1111_CFG_SCALE)
-        if form_data.automatic1111.AUTOMATIC1111_CFG_SCALE
-        else None
+    # Edit Image
+    request.app.state.config.ENABLE_IMAGE_EDIT = form_data.ENABLE_IMAGE_EDIT
+    request.app.state.config.IMAGE_EDIT_ENGINE = form_data.IMAGE_EDIT_ENGINE
+    request.app.state.config.IMAGE_EDIT_MODEL = form_data.IMAGE_EDIT_MODEL
+    request.app.state.config.IMAGE_EDIT_SIZE = form_data.IMAGE_EDIT_SIZE
+
+    request.app.state.config.IMAGES_EDIT_OPENAI_API_BASE_URL = (
+        form_data.IMAGES_EDIT_OPENAI_API_BASE_URL
     )
-    request.app.state.config.AUTOMATIC1111_SAMPLER = (
-        form_data.automatic1111.AUTOMATIC1111_SAMPLER
-        if form_data.automatic1111.AUTOMATIC1111_SAMPLER
-        else None
+    request.app.state.config.IMAGES_EDIT_OPENAI_API_KEY = (
+        form_data.IMAGES_EDIT_OPENAI_API_KEY
     )
-    request.app.state.config.AUTOMATIC1111_SCHEDULER = (
-        form_data.automatic1111.AUTOMATIC1111_SCHEDULER
-        if form_data.automatic1111.AUTOMATIC1111_SCHEDULER
-        else None
+    request.app.state.config.IMAGES_EDIT_OPENAI_API_VERSION = (
+        form_data.IMAGES_EDIT_OPENAI_API_VERSION
     )
 
-    request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL = (
-        form_data.dartmouth.DARTMOUTH_API_BASE_URL
-        if form_data.dartmouth.DARTMOUTH_API_BASE_URL
-        else None
+    request.app.state.config.IMAGES_EDIT_MAGIC_API_BASE_URL = (
+        form_data.IMAGES_EDIT_MAGIC_API_BASE_URL.strip("/")
+    )
+    request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY = (
+        form_data.IMAGES_EDIT_MAGIC_API_KEY
     )
 
-    request.app.state.config.IMAGES_DARTMOUTH_API_KEY = (
-        form_data.dartmouth.DARTMOUTH_API_KEY
-        if form_data.dartmouth.DARTMOUTH_API_KEY
-        else None
+    request.app.state.config.IMAGES_EDIT_GEMINI_API_BASE_URL = (
+        form_data.IMAGES_EDIT_GEMINI_API_BASE_URL
+    )
+    request.app.state.config.IMAGES_EDIT_GEMINI_API_KEY = (
+        form_data.IMAGES_EDIT_GEMINI_API_KEY
     )
 
-    request.app.state.config.COMFYUI_BASE_URL = (
-        form_data.comfyui.COMFYUI_BASE_URL.strip("/")
+    request.app.state.config.IMAGES_EDIT_COMFYUI_BASE_URL = (
+        form_data.IMAGES_EDIT_COMFYUI_BASE_URL.strip("/")
     )
-    request.app.state.config.COMFYUI_API_KEY = form_data.comfyui.COMFYUI_API_KEY
-
-    request.app.state.config.COMFYUI_WORKFLOW = form_data.comfyui.COMFYUI_WORKFLOW
-    request.app.state.config.COMFYUI_WORKFLOW_NODES = (
-        form_data.comfyui.COMFYUI_WORKFLOW_NODES
+    request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY = (
+        form_data.IMAGES_EDIT_COMFYUI_API_KEY
+    )
+    request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW = (
+        form_data.IMAGES_EDIT_COMFYUI_WORKFLOW
+    )
+    request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES = (
+        form_data.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES
     )
 
     return {
-        "enabled": request.app.state.config.ENABLE_IMAGE_GENERATION,
-        "engine": request.app.state.config.IMAGE_GENERATION_ENGINE,
-        "prompt_generation": request.app.state.config.ENABLE_IMAGE_PROMPT_GENERATION,
-        "openai": {
-            "OPENAI_API_BASE_URL": request.app.state.config.IMAGES_OPENAI_API_BASE_URL,
-            "OPENAI_API_KEY": request.app.state.config.IMAGES_OPENAI_API_KEY,
-        },
-        "automatic1111": {
-            "AUTOMATIC1111_BASE_URL": request.app.state.config.AUTOMATIC1111_BASE_URL,
-            "AUTOMATIC1111_API_AUTH": request.app.state.config.AUTOMATIC1111_API_AUTH,
-            "AUTOMATIC1111_CFG_SCALE": request.app.state.config.AUTOMATIC1111_CFG_SCALE,
-            "AUTOMATIC1111_SAMPLER": request.app.state.config.AUTOMATIC1111_SAMPLER,
-            "AUTOMATIC1111_SCHEDULER": request.app.state.config.AUTOMATIC1111_SCHEDULER,
-        },
-        "comfyui": {
-            "COMFYUI_BASE_URL": request.app.state.config.COMFYUI_BASE_URL,
-            "COMFYUI_API_KEY": request.app.state.config.COMFYUI_API_KEY,
-            "COMFYUI_WORKFLOW": request.app.state.config.COMFYUI_WORKFLOW,
-            "COMFYUI_WORKFLOW_NODES": request.app.state.config.COMFYUI_WORKFLOW_NODES,
-        },
-        "gemini": {
-            "GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
-            "GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
-        },
-        "dartmouth": {
-            "DARTMOUTH_API_BASE_URL": request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL,
-            "DARTMOUTH_API_KEY": request.app.state.config.IMAGES_DARTMOUTH_API_KEY,
-        },
+        "ENABLE_IMAGE_GENERATION": request.app.state.config.ENABLE_IMAGE_GENERATION,
+        "ENABLE_IMAGE_PROMPT_GENERATION": request.app.state.config.ENABLE_IMAGE_PROMPT_GENERATION,
+        "IMAGE_GENERATION_ENGINE": request.app.state.config.IMAGE_GENERATION_ENGINE,
+        "IMAGE_GENERATION_MODEL": request.app.state.config.IMAGE_GENERATION_MODEL,
+        "IMAGE_SIZE": request.app.state.config.IMAGE_SIZE,
+        "IMAGE_STEPS": request.app.state.config.IMAGE_STEPS,
+        "IMAGES_OPENAI_API_BASE_URL": request.app.state.config.IMAGES_OPENAI_API_BASE_URL,
+        "IMAGES_OPENAI_API_KEY": request.app.state.config.IMAGES_OPENAI_API_KEY,
+        "IMAGES_OPENAI_API_VERSION": request.app.state.config.IMAGES_OPENAI_API_VERSION,
+        "IMAGES_OPENAI_API_PARAMS": request.app.state.config.IMAGES_OPENAI_API_PARAMS,
+        "IMAGES_MAGIC_API_BASE_URL": request.app.state.config.IMAGES_MAGIC_API_BASE_URL,
+        "IMAGES_MAGIC_API_KEY": request.app.state.config.IMAGES_MAGIC_API_KEY,
+        "AUTOMATIC1111_BASE_URL": request.app.state.config.AUTOMATIC1111_BASE_URL,
+        "AUTOMATIC1111_API_AUTH": request.app.state.config.AUTOMATIC1111_API_AUTH,
+        "AUTOMATIC1111_PARAMS": request.app.state.config.AUTOMATIC1111_PARAMS,
+        "COMFYUI_BASE_URL": request.app.state.config.COMFYUI_BASE_URL,
+        "COMFYUI_API_KEY": request.app.state.config.COMFYUI_API_KEY,
+        "COMFYUI_WORKFLOW": request.app.state.config.COMFYUI_WORKFLOW,
+        "COMFYUI_WORKFLOW_NODES": request.app.state.config.COMFYUI_WORKFLOW_NODES,
+        "IMAGES_GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
+        "IMAGES_GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
+        "IMAGES_GEMINI_ENDPOINT_METHOD": request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD,
+        "ENABLE_IMAGE_EDIT": request.app.state.config.ENABLE_IMAGE_EDIT,
+        "IMAGE_EDIT_ENGINE": request.app.state.config.IMAGE_EDIT_ENGINE,
+        "IMAGE_EDIT_MODEL": request.app.state.config.IMAGE_EDIT_MODEL,
+        "IMAGE_EDIT_SIZE": request.app.state.config.IMAGE_EDIT_SIZE,
+        "IMAGES_EDIT_OPENAI_API_BASE_URL": request.app.state.config.IMAGES_EDIT_OPENAI_API_BASE_URL,
+        "IMAGES_EDIT_OPENAI_API_KEY": request.app.state.config.IMAGES_EDIT_OPENAI_API_KEY,
+        "IMAGES_EDIT_OPENAI_API_VERSION": request.app.state.config.IMAGES_EDIT_OPENAI_API_VERSION,
+        "IMAGES_EDIT_MAGIC_API_BASE_URL": request.app.state.config.IMAGES_EDIT_MAGIC_API_BASE_URL,
+        "IMAGES_EDIT_MAGIC_API_KEY": request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY,
+        "IMAGES_EDIT_GEMINI_API_BASE_URL": request.app.state.config.IMAGES_EDIT_GEMINI_API_BASE_URL,
+        "IMAGES_EDIT_GEMINI_API_KEY": request.app.state.config.IMAGES_EDIT_GEMINI_API_KEY,
+        "IMAGES_EDIT_COMFYUI_BASE_URL": request.app.state.config.IMAGES_EDIT_COMFYUI_BASE_URL,
+        "IMAGES_EDIT_COMFYUI_API_KEY": request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY,
+        "IMAGES_EDIT_COMFYUI_WORKFLOW": request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW,
+        "IMAGES_EDIT_COMFYUI_WORKFLOW_NODES": request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES,
     }
 
 
@@ -229,133 +408,75 @@ async def verify_url(request: Request, user=Depends(get_admin_user)):
             return True
         except Exception:
             request.app.state.config.ENABLE_IMAGE_GENERATION = False
-            raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INVALID_URL)
-    elif request.app.state.config.IMAGE_GENERATION_ENGINE == "comfyui":
+            raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INCORRECT_URL)
 
-        headers = None
-        if request.app.state.config.COMFYUI_API_KEY:
-            headers = {
-                "Authorization": f"Bearer {request.app.state.config.COMFYUI_API_KEY}"
-            }
+    return True
 
-        try:
-            r = requests.get(
-                url=f"{request.app.state.config.COMFYUI_BASE_URL}/object_info",
-                headers=headers,
-            )
+
+class CreateImageForm(BaseModel):
+    model: Optional[str] = None
+    prompt: str
+    size: Optional[str] = None
+    n: int = 1
+    negative_prompt: Optional[str] = None
+
+
+class ComfyUICreateImageForm(BaseModel):
+    prompt: str
+    width: int
+    height: int
+    n: int
+    steps: Optional[int] = None
+    negative_prompt: Optional[str] = None
+
+
+def get_image_data(data: str, headers=None):
+    try:
+        if data.startswith("http://") or data.startswith("https://"):
+            if headers:
+                r = requests.get(data, headers=headers)
+            else:
+                r = requests.get(data)
+
             r.raise_for_status()
-            return True
-        except Exception:
-            request.app.state.config.ENABLE_IMAGE_GENERATION = False
-            raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INVALID_URL)
-    else:
-        return True
+            if r.headers["content-type"].split("/")[0] == "image":
+                mime_type = r.headers["content-type"]
+                return r.content, mime_type
+            else:
+                log.error("Url does not point to an image.")
+                return None
+        else:
+            if "," in data:
+                header, encoded = data.split(",", 1)
+                mime_type = header.split(";")[0].lstrip("data:")
+                img_data = base64.b64decode(encoded)
+            else:
+                mime_type = "image/png"
+                img_data = base64.b64decode(data)
+            return img_data, mime_type
+    except Exception as e:
+        log.exception(f"Error loading image data: {e}")
+        return None, None
 
 
-def set_image_model(request: Request, model: str):
-    log.info(f"Setting image model to {model}")
-    request.app.state.config.IMAGE_GENERATION_MODEL = model
-    if request.app.state.config.IMAGE_GENERATION_ENGINE in ["", "automatic1111"]:
-        api_auth = get_automatic1111_api_auth(request)
-        r = requests.get(
-            url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/options",
-            headers={"authorization": api_auth},
-        )
-        options = r.json()
-        if model != options["sd_model_checkpoint"]:
-            options["sd_model_checkpoint"] = model
-            r = requests.post(
-                url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/options",
-                json=options,
-                headers={"authorization": api_auth},
-            )
-    return request.app.state.config.IMAGE_GENERATION_MODEL
-
-
-def get_image_model(request):
-    if request.app.state.config.IMAGE_GENERATION_ENGINE == "openai":
-        return (
-            request.app.state.config.IMAGE_GENERATION_MODEL
-            if request.app.state.config.IMAGE_GENERATION_MODEL
-            else "dall-e-2"
-        )
-    elif request.app.state.config.IMAGE_GENERATION_ENGINE == "gemini":
-        return (
-            request.app.state.config.IMAGE_GENERATION_MODEL
-            if request.app.state.config.IMAGE_GENERATION_MODEL
-            else "imagen-3.0-generate-002"
-        )
-    elif request.app.state.config.IMAGE_GENERATION_ENGINE == "comfyui":
-        return (
-            request.app.state.config.IMAGE_GENERATION_MODEL
-            if request.app.state.config.IMAGE_GENERATION_MODEL
-            else ""
-        )
-    elif request.app.state.config.IMAGE_GENERATION_ENGINE == "dartmouth":
-        return (
-            request.app.state.config.IMAGE_GENERATION_MODEL
-            if request.app.state.config.IMAGE_GENERATION_MODEL
-            else ""
-        )
-    elif (
-        request.app.state.config.IMAGE_GENERATION_ENGINE == "automatic1111"
-        or request.app.state.config.IMAGE_GENERATION_ENGINE == ""
-    ):
-        try:
-            r = requests.get(
-                url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/options",
-                headers={"authorization": get_automatic1111_api_auth(request)},
-            )
-            options = r.json()
-            return options["sd_model_checkpoint"]
-        except Exception as e:
-            request.app.state.config.ENABLE_IMAGE_GENERATION = False
-            raise HTTPException(status_code=400, detail=ERROR_MESSAGES.DEFAULT(e))
-
-
-class ImageConfigForm(BaseModel):
-    MODEL: str
-    IMAGE_SIZE: str
-    IMAGE_STEPS: int
-
-
-@router.get("/image/config")
-async def get_image_config(request: Request, user=Depends(get_admin_user)):
-    return {
-        "MODEL": request.app.state.config.IMAGE_GENERATION_MODEL,
-        "IMAGE_SIZE": request.app.state.config.IMAGE_SIZE,
-        "IMAGE_STEPS": request.app.state.config.IMAGE_STEPS,
-    }
-
-
-@router.post("/image/config/update")
-async def update_image_config(
-    request: Request, form_data: ImageConfigForm, user=Depends(get_admin_user)
-):
-    set_image_model(request, form_data.MODEL)
-
-    pattern = r"^\d+x\d+$"
-    if re.match(pattern, form_data.IMAGE_SIZE):
-        request.app.state.config.IMAGE_SIZE = form_data.IMAGE_SIZE
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=ERROR_MESSAGES.INCORRECT_FORMAT("  (e.g., 512x512)."),
-        )
-
-    if form_data.IMAGE_STEPS >= 0:
-        request.app.state.config.IMAGE_STEPS = form_data.IMAGE_STEPS
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=ERROR_MESSAGES.INCORRECT_FORMAT("  (e.g., 50)."),
-        )
-
-    return {
-        "MODEL": request.app.state.config.IMAGE_GENERATION_MODEL,
-        "IMAGE_SIZE": request.app.state.config.IMAGE_SIZE,
-        "IMAGE_STEPS": request.app.state.config.IMAGE_STEPS,
-    }
+def upload_image(request, image_data, content_type, metadata, user):
+    image_format = mimetypes.guess_extension(content_type)
+    file = UploadFile(
+        file=io.BytesIO(image_data),
+        filename=f"generated-image{image_format}",  # will be converted to a unique ID on upload_file
+        headers={
+            "content-type": content_type,
+        },
+    )
+    file_item = upload_file_handler(
+        request,
+        file=file,
+        metadata=metadata,
+        process=False,
+        user=user,
+    )
+    url = request.app.url_path_for("get_file_content_by_id", file_id=file_item["id"])
+    return url
 
 
 @router.get("/models")
@@ -370,10 +491,6 @@ def get_models(request: Request, user=Depends(get_verified_user)):
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == "gemini":
             return [
                 {"id": "imagen-3.0-generate-002", "name": "imagen-3.0 generate-002"},
-            ]
-        elif request.app.state.config.IMAGE_GENERATION_ENGINE == "dartmouth":
-            return [
-                {"id": "magic", "name": "magic"},
             ]
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == "comfyui":
             # TODO - get models from comfyui
@@ -424,6 +541,11 @@ def get_models(request: Request, user=Depends(get_verified_user)):
                         ][0],
                     )
                 )
+        elif request.app.state.config.IMAGE_GENERATION_ENGINE == "magic":
+            # For MAGIC engine we delegate to a remote Open WebUI instance.
+            # The model list is not fetched here; administrators can configure
+            # the model name manually in the settings.
+            return []
         elif (
             request.app.state.config.IMAGE_GENERATION_ENGINE == "automatic1111"
             or request.app.state.config.IMAGE_GENERATION_ENGINE == ""
@@ -444,92 +566,459 @@ def get_models(request: Request, user=Depends(get_verified_user)):
         raise HTTPException(status_code=400, detail=ERROR_MESSAGES.DEFAULT(e))
 
 
-class GenerateImageForm(BaseModel):
-    model: Optional[str] = None
-    prompt: str
-    size: Optional[str] = None
-    n: int = 1
-    negative_prompt: Optional[str] = None
-
-
-def load_b64_image_data(b64_str):
+@router.get("/openai/models")
+def get_openai_models(request: Request, user=Depends(get_verified_user)):
     try:
-        if "," in b64_str:
-            header, encoded = b64_str.split(",", 1)
-            mime_type = header.split(";")[0].lstrip("data:")
-            img_data = base64.b64decode(encoded)
-        else:
-            mime_type = "image/png"
-            img_data = base64.b64decode(b64_str)
-        return img_data, mime_type
+        if not request.app.state.config.IMAGES_OPENAI_API_BASE_URL:
+            log.warning("IMAGES_OPENAI_API_BASE_URL not set")
+            raise Exception("IMAGES_OPENAI_API_BASE_URL not set")
+        if not request.app.state.config.IMAGES_OPENAI_API_KEY:
+            log.warning("IMAGES_OPENAI_API_KEY not set")
+            raise Exception("IMAGES_OPENAI_API_KEY not set")
+        headers = {
+            "Authorization": f"Bearer {request.app.state.config.IMAGES_OPENAI_API_KEY}",
+        }
+
+        if ENABLE_FORWARD_USER_INFO_HEADERS:
+            headers = include_user_info_headers(headers, user)
+
+        models = requests.get(
+            url=f"{request.app.state.config.IMAGES_OPENAI_API_BASE_URL}/models",
+            headers=headers,
+        )
+        models = models.json()
+        models_data = []
+
+        for model in models["data"]:
+            if model["id"].startswith("dall-e"):
+                models_data.append({"id": model["id"], "name": model["id"]})
+
+        return models_data
     except Exception as e:
-        log.exception(f"Error loading image data: {e}")
-        return None, None
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES.DEFAULT(e))
 
 
-def load_url_image_data(url, headers=None):
+@router.get("/openai/models/{id}")
+async def get_openai_model(id: str, request: Request, user=Depends(get_verified_user)):
     try:
-        if headers:
-            r = requests.get(url, headers=headers)
-        else:
-            r = requests.get(url)
+        headers = {
+            "Authorization": f"Bearer {request.app.state.config.IMAGES_OPENAI_API_KEY}",
+        }
 
-        r.raise_for_status()
-        if r.headers["content-type"].split("/")[0] == "image":
-            mime_type = r.headers["content-type"]
-            return r.content, mime_type
-        else:
-            log.error("Url does not point to an image.")
-            return None
+        if ENABLE_FORWARD_USER_INFO_HEADERS:
+            headers = include_user_info_headers(headers, user)
 
+        model = requests.get(
+            url=f"{request.app.state.config.IMAGES_OPENAI_API_BASE_URL}/models/{id}",
+            headers=headers,
+        )
+
+        return model.json()
     except Exception as e:
-        log.exception(f"Error saving image: {e}")
-        return None
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES.DEFAULT(e))
 
 
-def upload_image(request, image_data, content_type, metadata, user):
-    image_format = mimetypes.guess_extension(content_type)
-    file = UploadFile(
-        file=io.BytesIO(image_data),
-        filename=f"generated-image{image_format}",  # will be converted to a unique ID on upload_file
-        headers={
-            "content-type": content_type,
-        },
-    )
-    file_item = upload_file(request, file, metadata=metadata, internal=True, user=user)
-    url = request.app.url_path_for("get_file_content_by_id", id=file_item.id)
-    return url
+@router.post("/openai/models/{id}/update")
+async def update_openai_model(
+    id: str, request: Request, user=Depends(get_admin_user)
+):
+    try:
+        headers = {
+            "Authorization": f"Bearer {request.app.state.config.IMAGES_OPENAI_API_KEY}",
+        }
+
+        if ENABLE_FORWARD_USER_INFO_HEADERS:
+            headers = include_user_info_headers(headers, user)
+
+        model = requests.get(
+            url=f"{request.app.state.config.IMAGES_OPENAI_API_BASE_URL}/models/{id}",
+            headers=headers,
+        )
+
+        return model.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES.DEFAULT(e))
+
+
+@router.post("/openai/models/{id}/delete")
+async def delete_openai_model(
+    id: str, request: Request, user=Depends(get_admin_user)
+):
+    try:
+        headers = {
+            "Authorization": f"Bearer {request.app.state.config.IMAGES_OPENAI_API_KEY}",
+        }
+
+        if ENABLE_FORWARD_USER_INFO_HEADERS:
+            headers = include_user_info_headers(headers, user)
+
+        model = requests.delete(
+            url=f"{request.app.state.config.IMAGES_OPENAI_API_BASE_URL}/models/{id}",
+            headers=headers,
+        )
+
+        return model.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES.DEFAULT(e))
+
+
+@router.get("/openai/config")
+async def get_openai_config(request: Request, user=Depends(get_verified_user)):
+    return {
+        "IMAGES_OPENAI_API_BASE_URL": request.app.state.config.IMAGES_OPENAI_API_BASE_URL,
+        "IMAGES_OPENAI_API_KEY": request.app.state.config.IMAGES_OPENAI_API_KEY,
+        "IMAGES_OPENAI_API_VERSION": request.app.state.config.IMAGES_OPENAI_API_VERSION,
+        "IMAGES_OPENAI_API_PARAMS": request.app.state.config.IMAGES_OPENAI_API_PARAMS,
+    }
+
+
+@router.post("/openai/config/update")
+async def update_openai_config(request: Request, user=Depends(get_admin_user)):
+    form_data = await request.json()
+
+    request.app.state.config.IMAGES_OPENAI_API_BASE_URL = form_data[
+        "IMAGES_OPENAI_API_BASE_URL"
+    ]
+    request.app.state.config.IMAGES_OPENAI_API_KEY = form_data["IMAGES_OPENAI_API_KEY"]
+    request.app.state.config.IMAGES_OPENAI_API_VERSION = form_data[
+        "IMAGES_OPENAI_API_VERSION"
+    ]
+    request.app.state.config.IMAGES_OPENAI_API_PARAMS = form_data[
+        "IMAGES_OPENAI_API_PARAMS"
+    ]
+
+    return {
+        "IMAGES_OPENAI_API_BASE_URL": request.app.state.config.IMAGES_OPENAI_API_BASE_URL,
+        "IMAGES_OPENAI_API_KEY": request.app.state.config.IMAGES_OPENAI_API_KEY,
+        "IMAGES_OPENAI_API_VERSION": request.app.state.config.IMAGES_OPENAI_API_VERSION,
+        "IMAGES_OPENAI_API_PARAMS": request.app.state.config.IMAGES_OPENAI_API_PARAMS,
+    }
+
+
+@router.get("/openai/images/generations")
+async def get_openai_images_generations(
+    request: Request, user=Depends(get_verified_user)
+):
+    return {
+        "IMAGES_OPENAI_API_BASE_URL": request.app.state.config.IMAGES_OPENAI_API_BASE_URL,
+        "IMAGES_OPENAI_API_KEY": request.app.state.config.IMAGES_OPENAI_API_KEY,
+        "IMAGES_OPENAI_API_VERSION": request.app.state.config.IMAGES_OPENAI_API_VERSION,
+        "IMAGES_OPENAI_API_PARAMS": request.app.state.config.IMAGES_OPENAI_API_PARAMS,
+    }
+
+
+@router.post("/openai/images/generations")
+async def post_openai_images_generations(
+    request: Request, user=Depends(get_admin_user)
+):
+    form_data = await request.json()
+
+    request.app.state.config.IMAGES_OPENAI_API_BASE_URL = form_data[
+        "IMAGES_OPENAI_API_BASE_URL"
+    ]
+    request.app.state.config.IMAGES_OPENAI_API_KEY = form_data["IMAGES_OPENAI_API_KEY"]
+    request.app.state.config.IMAGES_OPENAI_API_VERSION = form_data[
+        "IMAGES_OPENAI_API_VERSION"
+    ]
+    request.app.state.config.IMAGES_OPENAI_API_PARAMS = form_data[
+        "IMAGES_OPENAI_API_PARAMS"
+    ]
+
+    return {
+        "IMAGES_OPENAI_API_BASE_URL": request.app.state.config.IMAGES_OPENAI_API_BASE_URL,
+        "IMAGES_OPENAI_API_KEY": request.app.state.config.IMAGES_OPENAI_API_KEY,
+        "IMAGES_OPENAI_API_VERSION": request.app.state.config.IMAGES_OPENAI_API_VERSION,
+        "IMAGES_OPENAI_API_PARAMS": request.app.state.config.IMAGES_OPENAI_API_PARAMS,
+    }
+
+
+@router.get("/gemini/config")
+async def get_gemini_config(request: Request, user=Depends(get_verified_user)):
+    return {
+        "IMAGES_GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
+        "IMAGES_GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
+        "IMAGES_GEMINI_ENDPOINT_METHOD": request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD,
+    }
+
+
+@router.post("/gemini/config/update")
+async def update_gemini_config(request: Request, user=Depends(get_admin_user)):
+    form_data = await request.json()
+
+    request.app.state.config.IMAGES_GEMINI_API_BASE_URL = form_data[
+        "IMAGES_GEMINI_API_BASE_URL"
+    ]
+    request.app.state.config.IMAGES_GEMINI_API_KEY = form_data["IMAGES_GEMINI_API_KEY"]
+    request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD = form_data[
+        "IMAGES_GEMINI_ENDPOINT_METHOD"
+    ]
+
+    return {
+        "IMAGES_GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
+        "IMAGES_GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
+        "IMAGES_GEMINI_ENDPOINT_METHOD": request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD,
+    }
+
+
+@router.get("/gemini/images/generations")
+async def get_gemini_images_generations(
+    request: Request, user=Depends(get_verified_user)
+):
+    return {
+        "IMAGES_GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
+        "IMAGES_GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
+        "IMAGES_GEMINI_ENDPOINT_METHOD": request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD,
+    }
+
+
+@router.post("/gemini/images/generations")
+async def post_gemini_images_generations(
+    request: Request, user=Depends(get_admin_user)
+):
+    form_data = await request.json()
+
+    request.app.state.config.IMAGES_GEMINI_API_BASE_URL = form_data[
+        "IMAGES_GEMINI_API_BASE_URL"
+    ]
+    request.app.state.config.IMAGES_GEMINI_API_KEY = form_data["IMAGES_GEMINI_API_KEY"]
+    request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD = form_data[
+        "IMAGES_GEMINI_ENDPOINT_METHOD"
+    ]
+
+    return {
+        "IMAGES_GEMINI_API_BASE_URL": request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
+        "IMAGES_GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
+        "IMAGES_GEMINI_ENDPOINT_METHOD": request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD,
+    }
+
+
+@router.get("/automatic1111/config")
+async def get_automatic1111_config(request: Request, user=Depends(get_verified_user)):
+    return {
+        "AUTOMATIC1111_BASE_URL": request.app.state.config.AUTOMATIC1111_BASE_URL,
+        "AUTOMATIC1111_API_AUTH": request.app.state.config.AUTOMATIC1111_API_AUTH,
+        "AUTOMATIC1111_PARAMS": request.app.state.config.AUTOMATIC1111_PARAMS,
+    }
+
+
+@router.post("/automatic1111/config/update")
+async def update_automatic1111_config(request: Request, user=Depends(get_admin_user)):
+    form_data = await request.json()
+
+    request.app.state.config.AUTOMATIC1111_BASE_URL = form_data["AUTOMATIC1111_BASE_URL"]
+    request.app.state.config.AUTOMATIC1111_API_AUTH = form_data["AUTOMATIC1111_API_AUTH"]
+    request.app.state.config.AUTOMATIC1111_PARAMS = form_data["AUTOMATIC1111_PARAMS"]
+
+    return {
+        "AUTOMATIC1111_BASE_URL": request.app.state.config.AUTOMATIC1111_BASE_URL,
+        "AUTOMATIC1111_API_AUTH": request.app.state.config.AUTOMATIC1111_API_AUTH,
+        "AUTOMATIC1111_PARAMS": request.app.state.config.AUTOMATIC1111_PARAMS,
+    }
+
+
+@router.get("/comfyui/config")
+async def get_comfyui_config(request: Request, user=Depends(get_verified_user)):
+    return {
+        "COMFYUI_BASE_URL": request.app.state.config.COMFYUI_BASE_URL,
+        "COMFYUI_API_KEY": request.app.state.config.COMFYUI_API_KEY,
+        "COMFYUI_WORKFLOW": request.app.state.config.COMFYUI_WORKFLOW,
+        "COMFYUI_WORKFLOW_NODES": request.app.state.config.COMFYUI_WORKFLOW_NODES,
+    }
+
+
+@router.post("/comfyui/config/update")
+async def update_comfyui_config(request: Request, user=Depends(get_admin_user)):
+    form_data = await request.json()
+
+    request.app.state.config.COMFYUI_BASE_URL = form_data["COMFYUI_BASE_URL"].strip("/")
+    request.app.state.config.COMFYUI_API_KEY = form_data["COMFYUI_API_KEY"]
+    request.app.state.config.COMFYUI_WORKFLOW = form_data["COMFYUI_WORKFLOW"]
+    request.app.state.config.COMFYUI_WORKFLOW_NODES = form_data[
+        "COMFYUI_WORKFLOW_NODES"
+    ]
+
+    return {
+        "COMFYUI_BASE_URL": request.app.state.config.COMFYUI_BASE_URL,
+        "COMFYUI_API_KEY": request.app.state.config.COMFYUI_API_KEY,
+        "COMFYUI_WORKFLOW": request.app.state.config.COMFYUI_WORKFLOW,
+        "COMFYUI_WORKFLOW_NODES": request.app.state.config.COMFYUI_WORKFLOW_NODES,
+    }
+
+
+@router.get("/comfyui/images/generations")
+async def get_comfyui_images_generations(
+    request: Request, user=Depends(get_verified_user)
+):
+    return {
+        "COMFYUI_BASE_URL": request.app.state.config.COMFYUI_BASE_URL,
+        "COMFYUI_API_KEY": request.app.state.config.COMFYUI_API_KEY,
+        "COMFYUI_WORKFLOW": request.app.state.config.COMFYUI_WORKFLOW,
+        "COMFYUI_WORKFLOW_NODES": request.app.state.config.COMFYUI_WORKFLOW_NODES,
+    }
+
+
+@router.post("/comfyui/images/generations")
+async def post_comfyui_images_generations(
+    request: Request, user=Depends(get_admin_user)
+):
+    form_data = await request.json()
+
+    request.app.state.config.COMFYUI_BASE_URL = form_data["COMFYUI_BASE_URL"].strip("/")
+    request.app.state.config.COMFYUI_API_KEY = form_data["COMFYUI_API_KEY"]
+    request.app.state.config.COMFYUI_WORKFLOW = form_data["COMFYUI_WORKFLOW"]
+    request.app.state.config.COMFYUI_WORKFLOW_NODES = form_data[
+        "COMFYUI_WORKFLOW_NODES"
+    ]
+
+    return {
+        "COMFYUI_BASE_URL": request.app.state.config.COMFYUI_BASE_URL,
+        "COMFYUI_API_KEY": request.app.state.config.COMFYUI_API_KEY,
+        "COMFYUI_WORKFLOW": request.app.state.config.COMFYUI_WORKFLOW,
+        "COMFYUI_WORKFLOW_NODES": request.app.state.config.COMFYUI_WORKFLOW_NODES,
+    }
+
+
+@router.post("/comfyui/workflow/update")
+async def update_comfyui_workflow(
+    request: Request, user=Depends(get_admin_user)
+):
+    form_data = await request.json()
+
+    request.app.state.config.COMFYUI_WORKFLOW = form_data["COMFYUI_WORKFLOW"]
+    request.app.state.config.COMFYUI_WORKFLOW_NODES = form_data[
+        "COMFYUI_WORKFLOW_NODES"
+    ]
+
+    return {
+        "COMFYUI_WORKFLOW": request.app.state.config.COMFYUI_WORKFLOW,
+        "COMFYUI_WORKFLOW_NODES": request.app.state.config.COMFYUI_WORKFLOW_NODES,
+    }
+
+
+@router.get("/automatic1111/images/generations")
+async def get_automatic1111_images_generations(
+    request: Request, user=Depends(get_verified_user)
+):
+    return {
+        "AUTOMATIC1111_BASE_URL": request.app.state.config.AUTOMATIC1111_BASE_URL,
+        "AUTOMATIC1111_API_AUTH": request.app.state.config.AUTOMATIC1111_API_AUTH,
+        "AUTOMATIC1111_PARAMS": request.app.state.config.AUTOMATIC1111_PARAMS,
+    }
+
+
+@router.post("/automatic1111/images/generations")
+async def post_automatic1111_images_generations(
+    request: Request, user=Depends(get_admin_user)
+):
+    form_data = await request.json()
+
+    request.app.state.config.AUTOMATIC1111_BASE_URL = form_data["AUTOMATIC1111_BASE_URL"]
+    request.app.state.config.AUTOMATIC1111_API_AUTH = form_data["AUTOMATIC1111_API_AUTH"]
+    request.app.state.config.AUTOMATIC1111_PARAMS = form_data["AUTOMATIC1111_PARAMS"]
+
+    return {
+        "AUTOMATIC1111_BASE_URL": request.app.state.config.AUTOMATIC1111_BASE_URL,
+        "AUTOMATIC1111_API_AUTH": request.app.state.config.AUTOMATIC1111_API_AUTH,
+        "AUTOMATIC1111_PARAMS": request.app.state.config.AUTOMATIC1111_PARAMS,
+    }
+
+
+@router.get("/automatic1111/images/generations/config")
+async def get_automatic1111_images_generations_config(
+    request: Request, user=Depends(get_verified_user)
+):
+    return {
+        "AUTOMATIC1111_BASE_URL": request.app.state.config.AUTOMATIC1111_BASE_URL,
+        "AUTOMATIC1111_API_AUTH": request.app.state.config.AUTOMATIC1111_API_AUTH,
+        "AUTOMATIC1111_PARAMS": request.app.state.config.AUTOMATIC1111_PARAMS,
+    }
+
+
+@router.post("/automatic1111/images/generations/config/update")
+async def update_automatic1111_images_generations_config(
+    request: Request, user=Depends(get_admin_user)
+):
+    form_data = await request.json()
+
+    request.app.state.config.AUTOMATIC1111_BASE_URL = form_data["AUTOMATIC1111_BASE_URL"]
+    request.app.state.config.AUTOMATIC1111_API_AUTH = form_data["AUTOMATIC1111_API_AUTH"]
+    request.app.state.config.AUTOMATIC1111_PARAMS = form_data["AUTOMATIC1111_PARAMS"]
+
+    return {
+        "AUTOMATIC1111_BASE_URL": request.app.state.config.AUTOMATIC1111_BASE_URL,
+        "AUTOMATIC1111_API_AUTH": request.app.state.config.AUTOMATIC1111_API_AUTH,
+        "AUTOMATIC1111_PARAMS": request.app.state.config.AUTOMATIC1111_PARAMS,
+    }
+
+
+@router.get("/config/engines")
+async def get_config_engines(request: Request, user=Depends(get_verified_user)):
+    return {
+        "IMAGE_GENERATION_ENGINE": request.app.state.config.IMAGE_GENERATION_ENGINE,
+        "IMAGE_EDIT_ENGINE": request.app.state.config.IMAGE_EDIT_ENGINE,
+    }
+
+
+@router.post("/config/engines/update")
+async def update_config_engines(
+    request: Request, user=Depends(get_admin_user)
+):
+    form_data = await request.json()
+
+    request.app.state.config.IMAGE_GENERATION_ENGINE = form_data[
+        "IMAGE_GENERATION_ENGINE"
+    ]
+    request.app.state.config.IMAGE_EDIT_ENGINE = form_data["IMAGE_EDIT_ENGINE"]
+
+    return {
+        "IMAGE_GENERATION_ENGINE": request.app.state.config.IMAGE_GENERATION_ENGINE,
+        "IMAGE_EDIT_ENGINE": request.app.state.config.IMAGE_EDIT_ENGINE,
+    }
 
 
 @router.post("/generations")
 async def image_generations(
     request: Request,
-    form_data: GenerateImageForm,
+    form_data: CreateImageForm,
     user=Depends(get_verified_user),
 ):
-    width, height = tuple(map(int, request.app.state.config.IMAGE_SIZE.split("x")))
+    # if IMAGE_SIZE = 'auto', default WidthxHeight to the 512x512 default
+    # This is only relevant when the user has set IMAGE_SIZE to 'auto' with an
+    # image model other than gpt-image-1, which is warned about on settings save
+
+    size = "512x512"
+    if (
+        request.app.state.config.IMAGE_SIZE
+        and "x" in request.app.state.config.IMAGE_SIZE
+    ):
+        size = request.app.state.config.IMAGE_SIZE
+
+    if form_data.size and "x" in form_data.size:
+        size = form_data.size
+
+    width, height = tuple(map(int, size.split("x")))
+    model = get_image_model(request)
 
     r = None
     try:
         if request.app.state.config.IMAGE_GENERATION_ENGINE == "openai":
-            headers = {}
-            headers["Authorization"] = (
-                f"Bearer {request.app.state.config.IMAGES_OPENAI_API_KEY}"
-            )
-            headers["Content-Type"] = "application/json"
+
+            headers = {
+                "Authorization": f"Bearer {request.app.state.config.IMAGES_OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            }
 
             if ENABLE_FORWARD_USER_INFO_HEADERS:
-                headers["X-OpenWebUI-User-Name"] = user.name
-                headers["X-OpenWebUI-User-Id"] = user.id
-                headers["X-OpenWebUI-User-Email"] = user.email
-                headers["X-OpenWebUI-User-Role"] = user.role
+                headers = include_user_info_headers(headers, user)
+
+            url = (
+                f"{request.app.state.config.IMAGES_OPENAI_API_BASE_URL}/images/generations",
+            )
+            if request.app.state.config.IMAGES_OPENAI_API_VERSION:
+                url = f"{url}?api-version={request.app.state.config.IMAGES_OPENAI_API_VERSION}"
 
             data = {
-                "model": (
-                    request.app.state.config.IMAGE_GENERATION_MODEL
-                    if request.app.state.config.IMAGE_GENERATION_MODEL != ""
-                    else "dall-e-2"
-                ),
+                "model": model,
                 "prompt": form_data.prompt,
                 "n": form_data.n,
                 "size": (
@@ -542,12 +1031,17 @@ async def image_generations(
                     if "gpt-image-1" in request.app.state.config.IMAGE_GENERATION_MODEL
                     else {"response_format": "b64_json"}
                 ),
+                **(
+                    {}
+                    if not request.app.state.config.IMAGES_OPENAI_API_PARAMS
+                    else request.app.state.config.IMAGES_OPENAI_API_PARAMS
+                ),
             }
 
             # Use asyncio.to_thread for the requests.post call
             r = await asyncio.to_thread(
                 requests.post,
-                url=f"{request.app.state.config.IMAGES_OPENAI_API_BASE_URL}/images/generations",
+                url=url,
                 json=data,
                 headers=headers,
             )
@@ -559,32 +1053,46 @@ async def image_generations(
 
             for image in res["data"]:
                 if image_url := image.get("url", None):
-                    image_data, content_type = load_url_image_data(image_url, headers)
+                    image_data, content_type = get_image_data(image_url, headers)
                 else:
-                    image_data, content_type = load_b64_image_data(image["b64_json"])
+                    image_data, content_type = get_image_data(image["b64_json"])
 
                 url = upload_image(request, image_data, content_type, data, user)
                 images.append({"url": url})
             return images
 
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == "gemini":
-            headers = {}
-            headers["Content-Type"] = "application/json"
-            headers["x-goog-api-key"] = request.app.state.config.IMAGES_GEMINI_API_KEY
-
-            model = get_image_model(request)
-            data = {
-                "instances": {"prompt": form_data.prompt},
-                "parameters": {
-                    "sampleCount": form_data.n,
-                    "outputOptions": {"mimeType": "image/png"},
-                },
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": request.app.state.config.IMAGES_GEMINI_API_KEY,
             }
+
+            data = {}
+
+            if (
+                request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD == ""
+                or request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD == "predict"
+            ):
+                model = f"{model}:predict"
+                data = {
+                    "instances": {"prompt": form_data.prompt},
+                    "parameters": {
+                        "sampleCount": form_data.n,
+                        "outputOptions": {"mimeType": "image/png"},
+                    },
+                }
+
+            elif (
+                request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD
+                == "generateContent"
+            ):
+                model = f"{model}:generateContent"
+                data = {"contents": [{"parts": [{"text": form_data.prompt}]}]}
 
             # Use asyncio.to_thread for the requests.post call
             r = await asyncio.to_thread(
                 requests.post,
-                url=f"{request.app.state.config.IMAGES_GEMINI_API_BASE_URL}/models/{model}:predict",
+                url=f"{request.app.state.config.IMAGES_GEMINI_API_BASE_URL}/models/{model}",
                 json=data,
                 headers=headers,
             )
@@ -593,12 +1101,25 @@ async def image_generations(
             res = r.json()
 
             images = []
-            for image in res["predictions"]:
-                image_data, content_type = load_b64_image_data(
-                    image["bytesBase64Encoded"]
-                )
-                url = upload_image(request, image_data, content_type, data, user)
-                images.append({"url": url})
+
+            if model.endswith(":predict"):
+                for image in res["predictions"]:
+                    image_data, content_type = get_image_data(
+                        image["bytesBase64Encoded"]
+                    )
+                    url = upload_image(request, image_data, content_type, data, user)
+                    images.append({"url": url})
+            elif model.endswith(":generateContent"):
+                for image in res["candidates"]:
+                    for part in image["content"]["parts"]:
+                        if part.get("inlineData", {}).get("data"):
+                            image_data, content_type = get_image_data(
+                                part["inlineData"]["data"]
+                            )
+                            url = upload_image(
+                                request, image_data, content_type, data, user
+                            )
+                            images.append({"url": url})
 
             return images
 
@@ -616,7 +1137,7 @@ async def image_generations(
             if form_data.negative_prompt is not None:
                 data["negative_prompt"] = form_data.negative_prompt
 
-            form_data = ComfyUIGenerateImageForm(
+            form_data = ComfyUICreateImageForm(
                 **{
                     "workflow": ComfyUIWorkflow(
                         **{
@@ -627,8 +1148,8 @@ async def image_generations(
                     **data,
                 }
             )
-            res = await comfyui_generate_image(
-                request.app.state.config.IMAGE_GENERATION_MODEL,
+            res = await comfyui_create_image(
+                model,
                 form_data,
                 user.id,
                 request.app.state.config.COMFYUI_BASE_URL,
@@ -645,7 +1166,7 @@ async def image_generations(
                         "Authorization": f"Bearer {request.app.state.config.COMFYUI_API_KEY}"
                     }
 
-                image_data, content_type = load_url_image_data(image["url"], headers)
+                image_data, content_type = get_image_data(image["url"], headers)
                 url = upload_image(
                     request,
                     image_data,
@@ -655,63 +1176,60 @@ async def image_generations(
                 )
                 images.append({"url": url})
             return images
-
-        elif request.app.state.config.IMAGE_GENERATION_ENGINE == "dartmouth":
-            headers = {}
-            headers["Authorization"] = (
-                f"Bearer {request.app.state.config.IMAGES_DARTMOUTH_API_KEY}"
-            )
-            headers["Content-Type"] = "application/json"
-
-            if ENABLE_FORWARD_USER_INFO_HEADERS:
-                headers["X-OpenWebUI-User-Name"] = user.name
-                headers["X-OpenWebUI-User-Id"] = user.id
-                headers["X-OpenWebUI-User-Email"] = user.email
-                headers["X-OpenWebUI-User-Role"] = user.role
-
-            data = {
-                "prompt": form_data.prompt,
-                "n": (
-                    form_data.n
-                    if form_data.n
-                    else 1
-                ),
-                "size": (
-                    form_data.size
-                    if form_data.size
-                    else (
-                        request.app.state.config.IMAGE_SIZE
-                        if request.app.state.config.IMAGE_SIZE in ["1024x1024", "1024x1536", "1536x1024"]
-                        else "auto"
-                    )
-                ),
-
+        elif request.app.state.config.IMAGE_GENERATION_ENGINE == "magic":
+            # MAGIC engine proxies image generation to another Open WebUI instance
+            base_url = request.app.state.config.IMAGES_MAGIC_API_BASE_URL.rstrip("/")
+            api_headers = {
+                "Content-Type": "application/json",
             }
+            if request.app.state.config.IMAGES_MAGIC_API_KEY:
+                api_headers["Authorization"] = f"Bearer {request.app.state.config.IMAGES_MAGIC_API_KEY}"
 
-            # Use asyncio.to_thread for the requests.post call
+            # Forward the same payload schema as CreateImageForm to the remote instance
+            payload = form_data.model_dump(exclude_none=True)
+
             r = await asyncio.to_thread(
                 requests.post,
-                url=f"{request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL}/api/v1/images/generations",
-                json=data,
-                headers=headers,
+                url=f"{base_url}/api/v1/images/generations",
+                json=payload,
+                headers=api_headers,
             )
 
             r.raise_for_status()
             res = r.json()
 
             images = []
-
+            # Remote Open WebUI returns a list of {'url': '/api/v1/files/<id>/content'}
             for image in res:
-                if image_url := image.get("url", None):
-                    full_image_url = f"{request.app.state.config.IMAGES_DARTMOUTH_API_BASE_URL}{image_url}"
-                    image_data, content_type = load_url_image_data(full_image_url, headers)
+                image_url = image.get("url")
+                if not image_url:
+                    continue
+
+                if image_url.startswith("/"):
+                    remote_url = f"{base_url}{image_url}"
                 else:
-                    image_data, content_type = load_b64_image_data(image["b64_json"])
+                    remote_url = image_url
 
-                url = upload_image(request, image_data, content_type, data, user)
-                images.append({"url": url})
+                file_headers = {}
+                if request.app.state.config.IMAGES_MAGIC_API_KEY:
+                    file_headers["Authorization"] = f"Bearer {request.app.state.config.IMAGES_MAGIC_API_KEY}"
+
+                image_data, content_type = get_image_data(
+                    remote_url, file_headers or None
+                )
+                if image_data is None:
+                    continue
+
+                local_url = upload_image(
+                    request,
+                    image_data,
+                    content_type,
+                    payload,
+                    user,
+                )
+                images.append({"url": local_url})
+
             return images
-
         elif (
             request.app.state.config.IMAGE_GENERATION_ENGINE == "automatic1111"
             or request.app.state.config.IMAGE_GENERATION_ENGINE == ""
@@ -732,14 +1250,8 @@ async def image_generations(
             if form_data.negative_prompt is not None:
                 data["negative_prompt"] = form_data.negative_prompt
 
-            if request.app.state.config.AUTOMATIC1111_CFG_SCALE:
-                data["cfg_scale"] = request.app.state.config.AUTOMATIC1111_CFG_SCALE
-
-            if request.app.state.config.AUTOMATIC1111_SAMPLER:
-                data["sampler_name"] = request.app.state.config.AUTOMATIC1111_SAMPLER
-
-            if request.app.state.config.AUTOMATIC1111_SCHEDULER:
-                data["scheduler"] = request.app.state.config.AUTOMATIC1111_SCHEDULER
+            if request.app.state.config.AUTOMATIC1111_PARAMS:
+                data = {**data, **request.app.state.config.AUTOMATIC1111_PARAMS}
 
             # Use asyncio.to_thread for the requests.post call
             r = await asyncio.to_thread(
@@ -755,7 +1267,7 @@ async def image_generations(
             images = []
 
             for image in res["images"]:
-                image_data, content_type = load_b64_image_data(image)
+                image_data, content_type = get_image_data(image)
                 url = upload_image(
                     request,
                     image_data,
@@ -772,3 +1284,383 @@ async def image_generations(
             if "error" in data:
                 error = data["error"]["message"]
         raise HTTPException(status_code=400, detail=ERROR_MESSAGES.DEFAULT(error))
+
+
+class EditImageForm(BaseModel):
+    image: str | list[str]  # base64-encoded image(s) or URL(s)
+    prompt: str
+    model: Optional[str] = None
+    size: Optional[str] = None
+    n: Optional[int] = None
+    negative_prompt: Optional[str] = None
+
+
+@router.post("/edit")
+async def image_edits(
+    request: Request,
+    form_data: EditImageForm,
+    user=Depends(get_verified_user),
+):
+    size = None
+    width, height = None, None
+    if (
+        request.app.state.config.IMAGE_EDIT_SIZE
+        and "x" in request.app.state.config.IMAGE_EDIT_SIZE
+    ) or (form_data.size and "x" in form_data.size):
+        size = (
+            form_data.size
+            if form_data.size
+            else request.app.state.config.IMAGE_EDIT_SIZE
+        )
+        width, height = tuple(map(int, size.split("x")))
+
+    model = (
+        request.app.state.config.IMAGE_EDIT_MODEL
+        if form_data.model is None
+        else form_data.model
+    )
+
+    try:
+
+        async def load_url_image(data):
+            if data.startswith("http://") or data.startswith("https://"):
+                r = await asyncio.to_thread(requests.get, data)
+                r.raise_for_status()
+
+                image_data = base64.b64encode(r.content).decode("utf-8")
+                return f"data:{r.headers['content-type']};base64,{image_data}"
+
+            elif data.startswith("/api/v1/files"):
+                file_id = data.split("/api/v1/files/")[1].split("/content")[0]
+                file_response = await get_file_content_by_id(file_id, user)
+
+                if isinstance(file_response, FileResponse):
+                    file_path = file_response.path
+
+                    with open(file_path, "rb") as f:
+                        file_bytes = f.read()
+                        image_data = base64.b64encode(file_bytes).decode("utf-8")
+                        mime_type, _ = mimetypes.guess_type(file_path)
+
+                    return f"data:{mime_type};base64,{image_data}"
+
+            return data
+
+        # Load image(s) from URL(s) if necessary
+        if isinstance(form_data.image, str):
+            form_data.image = await load_url_image(form_data.image)
+        elif isinstance(form_data.image, list):
+            form_data.image = [await load_url_image(img) for img in form_data.image]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES.DEFAULT(e))
+
+    def get_image_file_item(base64_string, param_name="image"):
+        data = base64_string
+        header, encoded = data.split(",", 1)
+        mime_type = header.split(";")[0].lstrip("data:")
+        image_data = base64.b64decode(encoded)
+        return (
+            param_name,
+            (
+                f"{uuid.uuid4()}.png",
+                io.BytesIO(image_data),
+                mime_type if mime_type else "image/png",
+            ),
+        )
+
+    r = None
+    try:
+        if request.app.state.config.IMAGE_EDIT_ENGINE == "openai":
+            headers = {
+                "Authorization": f"Bearer {request.app.state.config.IMAGES_EDIT_OPENAI_API_KEY}",
+            }
+
+            if ENABLE_FORWARD_USER_INFO_HEADERS:
+                headers = include_user_info_headers(headers, user)
+
+            data = {
+                "model": model,
+                "prompt": form_data.prompt,
+                **({"n": form_data.n} if form_data.n else {}),
+                **({"size": size} if size else {}),
+                **(
+                    {}
+                    if "gpt-image-1" in request.app.state.config.IMAGE_EDIT_MODEL
+                    else {"response_format": "b64_json"}
+                ),
+            }
+
+            files = []
+            if isinstance(form_data.image, str):
+                files = [get_image_file_item(form_data.image)]
+            elif isinstance(form_data.image, list):
+                for img in form_data.image:
+                    files.append(get_image_file_item(img, "image[]"))
+
+            url_search_params = ""
+            if request.app.state.config.IMAGES_EDIT_OPENAI_API_VERSION:
+                url_search_params += f"?api-version={request.app.state.config.IMAGES_EDIT_OPENAI_API_VERSION}"
+
+            # Use asyncio.to_thread for the requests.post call
+            r = await asyncio.to_thread(
+                requests.post,
+                url=f"{request.app.state.config.IMAGES_EDIT_OPENAI_API_BASE_URL}/images/edits{url_search_params}",
+                headers=headers,
+                files=files,
+                data=data,
+            )
+
+            r.raise_for_status()
+            res = r.json()
+
+            images = []
+            for image in res["data"]:
+                if image_url := image.get("url", None):
+                    image_data, content_type = get_image_data(image_url, headers)
+                else:
+                    image_data, content_type = get_image_data(image["b64_json"])
+
+                url = upload_image(request, image_data, content_type, data, user)
+                images.append({"url": url})
+            return images
+
+        elif request.app.state.config.IMAGE_EDIT_ENGINE == "gemini":
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": request.app.state.config.IMAGES_EDIT_GEMINI_API_KEY,
+            }
+
+            model = f"{model}:generateContent"
+            data = {"contents": [{"parts": [{"text": form_data.prompt}]}]}
+
+            if isinstance(form_data.image, str):
+                data["contents"][0]["parts"].append(
+                    {
+                        "inline_data": {
+                            "mime_type": "image/png",
+                            "data": form_data.image.split(",", 1)[1],
+                        }
+                    }
+                )
+            elif isinstance(form_data.image, list):
+                data["contents"][0]["parts"].extend(
+                    [
+                        {
+                            "inline_data": {
+                                "mime_type": "image/png",
+                                "data": image.split(",", 1)[1],
+                            }
+                        }
+                        for image in form_data.image
+                    ]
+                )
+
+            # Use asyncio.to_thread for the requests.post call
+            r = await asyncio.to_thread(
+                requests.post,
+                url=f"{request.app.state.config.IMAGES_EDIT_GEMINI_API_BASE_URL}/models/{model}",
+                json=data,
+                headers=headers,
+            )
+
+            r.raise_for_status()
+            res = r.json()
+
+            images = []
+            for image in res["candidates"]:
+                for part in image["content"]["parts"]:
+                    if part.get("inlineData", {}).get("data"):
+                        image_data, content_type = get_image_data(
+                            part["inlineData"]["data"]
+                        )
+                        url = upload_image(
+                            request, image_data, content_type, data, user
+                        )
+                        images.append({"url": url})
+
+            return images
+
+        elif request.app.state.config.IMAGE_EDIT_ENGINE == "comfyui":
+            try:
+                files = []
+                if isinstance(form_data.image, str):
+                    files = [get_image_file_item(form_data.image)]
+                elif isinstance(form_data.image, list):
+                    for img in form_data.image:
+                        files.append(get_image_file_item(img))
+
+                # Upload images to ComfyUI and get their names
+                comfyui_images = []
+                for file_item in files:
+                    res = await comfyui_upload_image(
+                        file_item,
+                        request.app.state.config.IMAGES_EDIT_COMFYUI_BASE_URL,
+                        request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY,
+                    )
+                    comfyui_images.append(res.get("name", file_item[1][0]))
+            except Exception as e:
+                log.debug(f"Error uploading images to ComfyUI: {e}")
+                raise Exception("Failed to upload images to ComfyUI.")
+
+            data = {
+                "image": comfyui_images,
+                "prompt": form_data.prompt,
+                **({"width": width} if width is not None else {}),
+                **({"height": height} if height is not None else {}),
+                **({"n": form_data.n} if form_data.n else {}),
+            }
+
+            form_data = ComfyUIEditImageForm(
+                **{
+                    "workflow": ComfyUIWorkflow(
+                        **{
+                            "workflow": request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW,
+                            "nodes": request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES,
+                        }
+                    ),
+                    **data,
+                }
+            )
+            res = await comfyui_edit_image(
+                model,
+                form_data,
+                user.id,
+                request.app.state.config.IMAGES_EDIT_COMFYUI_BASE_URL,
+                request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY,
+            )
+            log.debug(f"res: {res}")
+
+            image_urls = set()
+            for image in res["data"]:
+                image_urls.add(image["url"])
+            image_urls = list(image_urls)
+
+            # Prioritize output type URLs if available
+            output_type_urls = [url for url in image_urls if "type=output" in url]
+            if output_type_urls:
+                image_urls = output_type_urls
+
+            log.debug(f"Image URLs: {image_urls}")
+            images = []
+
+            for image_url in image_urls:
+                headers = None
+                if request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY:
+                    headers = {
+                        "Authorization": f"Bearer {request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY}"
+                    }
+
+                image_data, content_type = get_image_data(image_url, headers)
+                url = upload_image(
+                    request,
+                    image_data,
+                    content_type,
+                    form_data.model_dump(exclude_none=True),
+                    user,
+                )
+                images.append({"url": url})
+
+            return images
+        elif request.app.state.config.IMAGE_EDIT_ENGINE == "magic":
+            # MAGIC engine proxies image editing to another Open WebUI instance
+            base_url = request.app.state.config.IMAGES_EDIT_MAGIC_API_BASE_URL.rstrip(
+                "/"
+            )
+            api_headers = {
+                "Content-Type": "application/json",
+            }
+            if request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY:
+                api_headers[
+                    "Authorization"
+                ] = f"Bearer {request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY}"
+
+            # Forward EditImageForm payload to the remote instance
+            payload = form_data.model_dump(exclude_none=True)
+
+            r = await asyncio.to_thread(
+                requests.post,
+                url=f"{base_url}/api/v1/images/edit",
+                json=payload,
+                headers=api_headers,
+            )
+
+            r.raise_for_status()
+            res = r.json()
+
+            images = []
+            for image in res:
+                image_url = image.get("url")
+                if not image_url:
+                    continue
+
+                if image_url.startswith("/"):
+                    remote_url = f"{base_url}{image_url}"
+                else:
+                    remote_url = image_url
+
+                file_headers = {}
+                if request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY:
+                    file_headers[
+                        "Authorization"
+                    ] = f"Bearer {request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY}"
+
+                image_data, content_type = get_image_data(
+                    remote_url, file_headers or None
+                )
+                if image_data is None:
+                    continue
+
+                local_url = upload_image(
+                    request,
+                    image_data,
+                    content_type,
+                    payload,
+                    user,
+                )
+                images.append({"url": local_url})
+
+            return images
+    except Exception as e:
+        error = e
+        if r != None:
+            data = r.text
+            try:
+                data = json.loads(data)
+                if "error" in data:
+                    error = data["error"]["message"]
+            except Exception:
+                error = data
+
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES.DEFAULT(error))
+
+
+@router.post("/proxy")
+async def image_proxy(request: Request, user=Depends(get_verified_user)):
+    url = request.query_params.get("url")
+    if not url:
+        raise HTTPException(status_code=BAD_REQUEST, detail="URL is required")
+
+    return await cors_proxy(
+        url=url,
+        method=request.method,
+        headers=request.headers,
+        body=await request.body(),
+        cookies=request.cookies,
+        allow_headers={"Content-Type", "Range"},
+    )
+
+
+@router.get("/list")
+async def get_image_list(request: Request, user=Depends(get_verified_user)):
+    files = await get_files(request, user)
+    image_files = [
+        file
+        for file in files
+        if file["mime_type"] and file["mime_type"].startswith("image/")
+    ]
+    return image_files
+
+
+@router.delete("/{file_id}")
+async def delete_image(file_id: str, request: Request, user=Depends(get_admin_user)):
+    return await delete_file_content_by_id(file_id=file_id, request=request, user=user)
