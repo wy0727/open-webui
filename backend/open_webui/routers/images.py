@@ -23,12 +23,13 @@ from loguru import logger as log
 from pydantic import BaseModel
 from starlette.status import HTTP_400_BAD_REQUEST as BAD_REQUEST
 
-from open_webui.config import SRC_LOG_LEVELS
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import (
     ENABLE_FORWARD_USER_INFO_HEADERS,
-    TEMPDIR_PATH,
+    SRC_LOG_LEVELS,          # ✅ SRC_LOG_LEVELS 实际在 env 里
+    TEMPDIR_PATH,            # 如果没用到也可以删掉
 )
+
 from open_webui.main import (
     get_admin_user,
     get_verified_user,
