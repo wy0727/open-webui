@@ -1076,7 +1076,7 @@ async def image_edits(
                 "prompt": form_data.prompt,
             #    "model": model,
                 "n": form_data.n if form_data.n else 1,
-                "size": size if size else request.app.state.config.IMAGE_EDIT_SIZE,
+                "size": size if size else request.app.state.config.IMAGE_EDIT_SIZE
             #    "negative_prompt": form_data.negative_prompt
             }
 
