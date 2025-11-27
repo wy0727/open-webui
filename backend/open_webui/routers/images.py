@@ -1033,6 +1033,7 @@ async def image_edits(
             return images
 
         elif engine == "magic":
+            # 1. 获取 B 实例配置
             base_url = request.app.state.config.IMAGES_EDIT_MAGIC_API_BASE_URL
             if not base_url:
                 raise HTTPException(
@@ -1049,79 +1050,99 @@ async def image_edits(
             if ENABLE_FORWARD_USER_INFO_HEADERS:
                 headers = include_user_info_headers(headers, user)
 
+            # 2. 预处理图片：将 URL/LocalPath 强制转换为 Base64
+            # Instance B 可能无法回访 Instance A 的 URL，所以必须由 A 转成 Base64 发送
+            # load_url_image 是本函数作用域内定义的闭包函数，直接调用即可
+
+            async def ensure_base64(img_data):
+                # 如果不是 data: 开头，说明可能是 URL 或路径，尝试转换
+                if isinstance(img_data, str) and not img_data.startswith("data:"):
+                    return await load_url_image(img_data)
+                return img_data
+
+            final_image_payload = None
+            if isinstance(form_data.image, str):
+                final_image_payload = await ensure_base64(form_data.image)
+            elif isinstance(form_data.image, list):
+                final_image_payload = [await ensure_base64(img) for img in form_data.image]
+
+            # 3. 构造目标 URL (Open WebUI 原生接口)
             proxy_url = base_url.rstrip("/") + "/images/edit"
 
-            # 这里使用 JSON 形式转发，与 open_webui 的 EditImageForm 对齐：
-            payload: dict = {
-                "model": model,
+            # 4. 构造 JSON Payload (完全符合 Open WebUI EditImageForm)
+            # 此时 final_image_payload 必定是 Base64 字符串
+            payload = {
+                "image": final_image_payload,
                 "prompt": form_data.prompt,
-                "image": form_data.image,
+            #    "model": model,
+                "n": form_data.n if form_data.n else 1,
+                "size": size if size else request.app.state.config.IMAGE_EDIT_SIZE,
+            #    "negative_prompt": form_data.negative_prompt
             }
-            if form_data.n is not None:
-                payload["n"] = form_data.n
-            if size is not None:
-                payload["size"] = size
-            if form_data.negative_prompt is not None:
-                payload["negative_prompt"] = form_data.negative_prompt
 
+            # 5. 发送 JSON 请求 (Open WebUI 间通信使用 JSON)
             r = await asyncio.to_thread(
                 requests.post,
                 url=proxy_url,
+                headers=headers,
                 json=payload,
-                headers={**headers, "Content-Type": "application/json"},
             )
+
             r.raise_for_status()
             res = r.json()
 
-            images: list[dict] = []
+            # 6. 处理响应 (下载 B 返回的图片并存入 A 本地)
+            remote_images = []
+            if isinstance(res, list):
+                remote_images = res
+            elif isinstance(res, dict):
+                # 兼容 {data: ...} 或 {images: ...}
+                remote_images = res.get("images", res.get("data", []))
+
+            images = []
             origin = _build_magic_origin(base_url)
 
-            # 同样兼容两种返回结构：
-            # 1）OpenAI 风格：{ "data": [ { "url": "..."} ] }
-            # 2）Open WebUI 风格：[{ "url": "/api/v1/files/..." }, ...] 或 { "images": [...] }
-            if isinstance(res, dict) and "data" in res:
-                for image in res["data"]:
-                    if image_url := image.get("url", None):
-                        image_data, content_type = get_image_data(image_url, headers)
+            for image_item in remote_images:
+                # 获取远程 URL 或 Base64
+                remote_url = image_item.get("url")
+                b64_json = image_item.get("b64_json")
+
+                image_data = None
+                content_type = None
+
+                try:
+                    if b64_json:
+                        # 如果 B 返回了 Base64 (最优情况)
+                        image_data, content_type = get_image_data(b64_json)
+                    elif remote_url:
+                        # 如果 B 返回了 URL，计算绝对路径并下载
+                        target_url = remote_url
+                        if not (remote_url.startswith("http://") or remote_url.startswith("https://")):
+                            if origin:
+                                target_url = origin + remote_url
+                            else:
+                                target_url = base_url.rstrip("/") + remote_url
+
+                        # 下载图片
+                        image_data, content_type = get_image_data(target_url, headers)
+
+                    if image_data:
+                        # 存入 A 的本地存储
+                        # 清理 metadata 中的大图数据，避免数据库臃肿
+                        safe_metadata = payload.copy()
+                        if "image" in safe_metadata:
+                            safe_metadata["image"] = "base64_hidden"
+
+                        url = upload_image(request, image_data, content_type, safe_metadata, user)
+                        images.append({"url": url})
                     else:
-                        image_data, content_type = get_image_data(image["b64_json"])
+                        # 如果无法获取数据，回退到原始 URL (虽然前端可能无法显示)
+                        if remote_url:
+                            images.append({"url": remote_url})
 
-                    url = upload_image(request, image_data, content_type, payload, user)
-                    images.append({"url": url})
-            else:
-                if isinstance(res, dict) and "images" in res:
-                    remote_images = res["images"]
-                elif isinstance(res, list):
-                    remote_images = res
-                else:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=ERROR_MESSAGES.DEFAULT(
-                            "Unexpected MAGIC edit proxy response format."
-                        ),
-                    )
-
-                for image in remote_images:
-                    image_url = image.get("url") if isinstance(image, dict) else None
-                    if not image_url:
-                        continue
-
-                    if image_url.startswith("http://") or image_url.startswith("https://"):
-                        remote_url = image_url
-                    elif origin:
-                        remote_url = origin + image_url
-                    else:
-                        remote_url = base_url.rstrip("/") + image_url
-
-                    image_data, content_type = get_image_data(remote_url, headers)
-                    url = upload_image(
-                        request,
-                        image_data,
-                        content_type,
-                        payload,
-                        user,
-                    )
-                    images.append({"url": url})
+                except Exception as e:
+                    log.error(f"Error processing remote image from Magic backend: {e}")
+                    continue
 
             return images
 
