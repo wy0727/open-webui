@@ -379,28 +379,29 @@
 							<span>{$i18n.t('Enable Image Generation')}</span>
 						</div>
 
-						<Switch
-								id="advanced-mode"
-								disabled={$user.role === 'user'}
-								bind:enabled={config && config.ENABLE_IMAGE_GENERATION}
-								on:click={async () => {
-								if (config) {
-									config.ENABLE_IMAGE_GENERATION = !config.ENABLE_IMAGE_GENERATION;
+						{#if config}
+							<Switch
+									id="advanced-mode"
+									disabled={$user.role === 'user'}
+									bind:enabled={config.ENABLE_IMAGE_GENERATION}
+									on:click={async () => {
+									  config.ENABLE_IMAGE_GENERATION = !config.ENABLE_IMAGE_GENERATION;
 
-									if (config.ENABLE_IMAGE_GENERATION === false) {
+									  if (config.ENABLE_IMAGE_GENERATION === false) {
 										config.ENABLE_IMAGE_PROMPT_GENERATION = false;
-									}
+									  }
 
-									if ($user.role === 'admin') {
+									  if ($user.role === 'admin') {
 										const res = await updateConfigHandler();
 
 										if (res) {
-											config = res;
+										  config = res;
 										}
-									}
-								}
-							}}
-						/>
+									  }
+									}}
+							/>
+						{/if}
+
 					</label>
 				</div>
 			</div>
