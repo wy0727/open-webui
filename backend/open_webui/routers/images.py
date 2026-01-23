@@ -731,7 +731,7 @@ async def image_generations(
                         image_data, content_type = get_image_data(image_url, headers)
                     else:
                         image_data, content_type = get_image_data(image["b64_json"])
-                    url = upload_image(request, image_data, content_type, payload, user)
+                    _, url = upload_image(request, image_data, content_type, payload, user)
                     images.append({"url": url})
             else:
                 if isinstance(res, dict) and "images" in res:
@@ -759,7 +759,7 @@ async def image_generations(
                         remote_url = base_url.rstrip("/") + image_url
 
                     image_data, content_type = get_image_data(remote_url, headers)
-                    url = upload_image(
+                    _, url = upload_image(
                         request,
                         image_data,
                         content_type,
@@ -1214,7 +1214,7 @@ async def image_edits(
                         if "image" in safe_metadata:
                             safe_metadata["image"] = "base64_hidden"
 
-                        url = upload_image(request, image_data, content_type, safe_metadata, user)
+                        _, url = upload_image(request, image_data, content_type, safe_metadata, user)
                         images.append({"url": url})
                     else:
                         # 如果无法获取数据，回退到原始 URL (虽然前端可能无法显示)
