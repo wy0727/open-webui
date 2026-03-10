@@ -1152,13 +1152,18 @@ async def image_edits(
 
             # 4. 构造 JSON Payload (完全符合 Open WebUI EditImageForm)
             # 此时 final_image_payload 必定是 Base64 字符串
-            payload = {
+            form_payload = {
                 "image": final_image_payload,
                 "prompt": form_data.prompt,
-            #    "model": model,
                 "n": form_data.n if form_data.n else 1,
                 "size": size if size else request.app.state.config.IMAGE_EDIT_SIZE
-            #    "negative_prompt": form_data.negative_prompt
+            #    **({"model": model} if model else {}),
+                **({"negative_prompt": form_data.negative_prompt} if getattr(form_data, "negative_prompt", None) else {}),
+            }
+
+            payload = {
+                "form_data": form_payload,
+                "metadata": metadata or {},   # metadata 之前在你的函数中已做 metadata = metadata or {}
             }
 
             # 5. 发送 JSON 请求 (Open WebUI 间通信使用 JSON)
