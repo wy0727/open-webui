@@ -1158,7 +1158,7 @@ async def image_edits(
                 "n": form_data.n if form_data.n else 1,
                 "size": size if size else request.app.state.config.IMAGE_EDIT_SIZE
             #    **({"model": model} if model else {}),
-                **({"negative_prompt": form_data.negative_prompt} if getattr(form_data, "negative_prompt", None) else {}),
+            #    **({"negative_prompt": form_data.negative_prompt} if getattr(form_data, "negative_prompt", None) else {}),
             }
 
             payload = {
