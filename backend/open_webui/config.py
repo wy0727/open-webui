@@ -1818,6 +1818,12 @@ TASK_MODEL_EXTERNAL = PersistentConfig(
     os.environ.get('TASK_MODEL_EXTERNAL', ''),
 )
 
+IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL = PersistentConfig(
+    'IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL',
+    'task.image_prompt.model.external',
+    os.environ.get('IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL', ''),
+)
+
 TITLE_GENERATION_PROMPT_TEMPLATE = PersistentConfig(
     'TITLE_GENERATION_PROMPT_TEMPLATE',
     'task.title.prompt_template',
@@ -3786,6 +3792,19 @@ IMAGES_OPENAI_API_PARAMS = PersistentConfig(
     'IMAGES_OPENAI_API_PARAMS', 'image_generation.openai.params', images_openai_params
 )
 
+# ===== MAGIC 代理引擎（图像生成） =====
+IMAGES_MAGIC_API_BASE_URL = PersistentConfig(
+    "IMAGES_MAGIC_API_BASE_URL",
+    "image_generation.magic.api_base_url",
+    os.getenv("IMAGES_MAGIC_API_BASE_URL", ""),
+)
+
+IMAGES_MAGIC_API_KEY = PersistentConfig(
+    "IMAGES_MAGIC_API_KEY",
+    "image_generation.magic.api_key",
+    os.getenv("IMAGES_MAGIC_API_KEY", ""),
+)
+
 
 IMAGES_GEMINI_API_BASE_URL = PersistentConfig(
     'IMAGES_GEMINI_API_BASE_URL',
@@ -3840,6 +3859,20 @@ IMAGES_EDIT_OPENAI_API_KEY = PersistentConfig(
     'images.edit.openai.api_key',
     os.getenv('IMAGES_EDIT_OPENAI_API_KEY', OPENAI_API_KEY),
 )
+
+# ===== MAGIC 代理引擎（图像编辑） =====
+IMAGES_EDIT_MAGIC_API_BASE_URL = PersistentConfig(
+    "IMAGES_EDIT_MAGIC_API_BASE_URL",
+    "images.edit.magic.api_base_url",
+    os.getenv("IMAGES_EDIT_MAGIC_API_BASE_URL", ""),
+)
+
+IMAGES_EDIT_MAGIC_API_KEY = PersistentConfig(
+    "IMAGES_EDIT_MAGIC_API_KEY",
+    "images.edit.magic.api_key",
+    os.getenv("IMAGES_EDIT_MAGIC_API_KEY", ""),
+)
+
 
 IMAGES_EDIT_GEMINI_API_BASE_URL = PersistentConfig(
     'IMAGES_EDIT_GEMINI_API_BASE_URL',

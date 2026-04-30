@@ -18,6 +18,7 @@
 	let taskConfig = {
 		TASK_MODEL: '',
 		TASK_MODEL_EXTERNAL: '',
+		IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL: '',
 		ENABLE_TITLE_GENERATION: true,
 		TITLE_GENERATION_PROMPT_TEMPLATE: '',
 		ENABLE_FOLLOW_UP_GENERATION: true,
@@ -381,6 +382,22 @@
 						</Tooltip>
 					</div>
 				{/if}
+
+				<div class="mb-2.5">
+					<div class=" mb-1 text-xs font-medium">{$i18n.t('Image Prompt Generation Model (External)')}</div>
+					<select
+						class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+						bind:value={taskConfig.IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL}
+					>
+						<option value="">{$i18n.t('Default Task Model')}</option>
+						{#each models as model}
+							<option value={model.id} class="bg-gray-100 dark:bg-gray-700">
+								{model.name}
+								{model?.connection_type === 'local' ? `(${$i18n.t('Local')})` : ''}
+							</option>
+						{/each}
+					</select>
+				</div>
 
 				<div class="mb-2.5">
 					<div class=" mb-1 text-xs font-medium">{$i18n.t('Image Prompt Generation Prompt')}</div>

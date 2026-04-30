@@ -66,6 +66,7 @@ async def get_task_config(request: Request, user=Depends(get_verified_user)):
     return {
         'TASK_MODEL': request.app.state.config.TASK_MODEL,
         'TASK_MODEL_EXTERNAL': request.app.state.config.TASK_MODEL_EXTERNAL,
+        'IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL': request.app.state.config.IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL,
         'TITLE_GENERATION_PROMPT_TEMPLATE': request.app.state.config.TITLE_GENERATION_PROMPT_TEMPLATE,
         'IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE': request.app.state.config.IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE,
         'ENABLE_AUTOCOMPLETE_GENERATION': request.app.state.config.ENABLE_AUTOCOMPLETE_GENERATION,
@@ -86,6 +87,7 @@ async def get_task_config(request: Request, user=Depends(get_verified_user)):
 class TaskConfigForm(BaseModel):
     TASK_MODEL: Optional[str]
     TASK_MODEL_EXTERNAL: Optional[str]
+    IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL: Optional[str]
     ENABLE_TITLE_GENERATION: bool
     TITLE_GENERATION_PROMPT_TEMPLATE: str
     IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE: str
@@ -106,6 +108,7 @@ class TaskConfigForm(BaseModel):
 async def update_task_config(request: Request, form_data: TaskConfigForm, user=Depends(get_admin_user)):
     request.app.state.config.TASK_MODEL = form_data.TASK_MODEL
     request.app.state.config.TASK_MODEL_EXTERNAL = form_data.TASK_MODEL_EXTERNAL
+    request.app.state.config.IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL = form_data.IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL
     request.app.state.config.ENABLE_TITLE_GENERATION = form_data.ENABLE_TITLE_GENERATION
     request.app.state.config.TITLE_GENERATION_PROMPT_TEMPLATE = form_data.TITLE_GENERATION_PROMPT_TEMPLATE
 
@@ -132,6 +135,7 @@ async def update_task_config(request: Request, form_data: TaskConfigForm, user=D
     return {
         'TASK_MODEL': request.app.state.config.TASK_MODEL,
         'TASK_MODEL_EXTERNAL': request.app.state.config.TASK_MODEL_EXTERNAL,
+        'IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL': request.app.state.config.IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL,
         'ENABLE_TITLE_GENERATION': request.app.state.config.ENABLE_TITLE_GENERATION,
         'TITLE_GENERATION_PROMPT_TEMPLATE': request.app.state.config.TITLE_GENERATION_PROMPT_TEMPLATE,
         'IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE': request.app.state.config.IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE,
@@ -378,12 +382,15 @@ async def generate_image_prompt(request: Request, form_data: dict, user=Depends(
             detail=ERROR_MESSAGES.MODEL_NOT_FOUND(),
         )
 
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
+    # Use IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL if configured, otherwise fall back to TASK_MODEL_EXTERNAL
+    image_prompt_model_external = (
+        request.app.state.config.IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL
+        or request.app.state.config.TASK_MODEL_EXTERNAL
+    )
     task_model_id = get_task_model_id(
         model_id,
         request.app.state.config.TASK_MODEL,
-        request.app.state.config.TASK_MODEL_EXTERNAL,
+        image_prompt_model_external,
         models,
     )
 

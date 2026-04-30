@@ -9,8 +9,9 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 import aiohttp
+
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -98,6 +99,12 @@ async def get_image_model(request):
         return (
             request.app.state.config.IMAGE_GENERATION_MODEL if request.app.state.config.IMAGE_GENERATION_MODEL else ''
         )
+    elif request.app.state.config.IMAGE_GENERATION_ENGINE == 'magic':
+        return (
+            request.app.state.config.IMAGE_GENERATION_MODEL
+            if request.app.state.config.IMAGE_GENERATION_MODEL
+            else 'dall-e-3'
+        )
     elif (
         request.app.state.config.IMAGE_GENERATION_ENGINE == 'automatic1111'
         or request.app.state.config.IMAGE_GENERATION_ENGINE == ''
@@ -129,6 +136,10 @@ class ImagesConfig(BaseModel):
     IMAGES_OPENAI_API_VERSION: str
     IMAGES_OPENAI_API_PARAMS: Optional[dict | str]
 
+    # MAGIC proxy (image generation)
+    IMAGES_MAGIC_API_BASE_URL: str
+    IMAGES_MAGIC_API_KEY: str
+
     AUTOMATIC1111_BASE_URL: str
     AUTOMATIC1111_API_AUTH: Optional[dict | str]
     AUTOMATIC1111_PARAMS: Optional[dict | str]
@@ -150,6 +161,11 @@ class ImagesConfig(BaseModel):
     IMAGES_EDIT_OPENAI_API_BASE_URL: str
     IMAGES_EDIT_OPENAI_API_KEY: str
     IMAGES_EDIT_OPENAI_API_VERSION: str
+
+    # MAGIC proxy (image edit)
+    IMAGES_EDIT_MAGIC_API_BASE_URL: str
+    IMAGES_EDIT_MAGIC_API_KEY: str
+
     IMAGES_EDIT_GEMINI_API_BASE_URL: str
     IMAGES_EDIT_GEMINI_API_KEY: str
     IMAGES_EDIT_COMFYUI_BASE_URL: str
@@ -171,6 +187,8 @@ async def get_config(request: Request, user=Depends(get_admin_user)):
         'IMAGES_OPENAI_API_KEY': request.app.state.config.IMAGES_OPENAI_API_KEY,
         'IMAGES_OPENAI_API_VERSION': request.app.state.config.IMAGES_OPENAI_API_VERSION,
         'IMAGES_OPENAI_API_PARAMS': request.app.state.config.IMAGES_OPENAI_API_PARAMS,
+        'IMAGES_MAGIC_API_BASE_URL': request.app.state.config.IMAGES_MAGIC_API_BASE_URL,
+        'IMAGES_MAGIC_API_KEY': request.app.state.config.IMAGES_MAGIC_API_KEY,
         'AUTOMATIC1111_BASE_URL': request.app.state.config.AUTOMATIC1111_BASE_URL,
         'AUTOMATIC1111_API_AUTH': request.app.state.config.AUTOMATIC1111_API_AUTH,
         'AUTOMATIC1111_PARAMS': request.app.state.config.AUTOMATIC1111_PARAMS,
@@ -188,6 +206,8 @@ async def get_config(request: Request, user=Depends(get_admin_user)):
         'IMAGES_EDIT_OPENAI_API_BASE_URL': request.app.state.config.IMAGES_EDIT_OPENAI_API_BASE_URL,
         'IMAGES_EDIT_OPENAI_API_KEY': request.app.state.config.IMAGES_EDIT_OPENAI_API_KEY,
         'IMAGES_EDIT_OPENAI_API_VERSION': request.app.state.config.IMAGES_EDIT_OPENAI_API_VERSION,
+        'IMAGES_EDIT_MAGIC_API_BASE_URL': request.app.state.config.IMAGES_EDIT_MAGIC_API_BASE_URL,
+        'IMAGES_EDIT_MAGIC_API_KEY': request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY,
         'IMAGES_EDIT_GEMINI_API_BASE_URL': request.app.state.config.IMAGES_EDIT_GEMINI_API_BASE_URL,
         'IMAGES_EDIT_GEMINI_API_KEY': request.app.state.config.IMAGES_EDIT_GEMINI_API_KEY,
         'IMAGES_EDIT_COMFYUI_BASE_URL': request.app.state.config.IMAGES_EDIT_COMFYUI_BASE_URL,
@@ -238,6 +258,12 @@ async def update_config(request: Request, form_data: ImagesConfig, user=Depends(
     request.app.state.config.IMAGES_OPENAI_API_VERSION = form_data.IMAGES_OPENAI_API_VERSION
     request.app.state.config.IMAGES_OPENAI_API_PARAMS = form_data.IMAGES_OPENAI_API_PARAMS
 
+    # MAGIC
+    request.app.state.config.IMAGES_MAGIC_API_BASE_URL = (
+        form_data.IMAGES_MAGIC_API_BASE_URL
+    )
+    request.app.state.config.IMAGES_MAGIC_API_KEY = form_data.IMAGES_MAGIC_API_KEY
+
     request.app.state.config.AUTOMATIC1111_BASE_URL = form_data.AUTOMATIC1111_BASE_URL
     request.app.state.config.AUTOMATIC1111_API_AUTH = form_data.AUTOMATIC1111_API_AUTH
     request.app.state.config.AUTOMATIC1111_PARAMS = form_data.AUTOMATIC1111_PARAMS
@@ -261,6 +287,9 @@ async def update_config(request: Request, form_data: ImagesConfig, user=Depends(
     request.app.state.config.IMAGES_EDIT_OPENAI_API_KEY = form_data.IMAGES_EDIT_OPENAI_API_KEY
     request.app.state.config.IMAGES_EDIT_OPENAI_API_VERSION = form_data.IMAGES_EDIT_OPENAI_API_VERSION
 
+    request.app.state.config.IMAGES_EDIT_MAGIC_API_BASE_URL = form_data.IMAGES_EDIT_MAGIC_API_BASE_URL
+    request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY = form_data.IMAGES_EDIT_MAGIC_API_KEY
+
     request.app.state.config.IMAGES_EDIT_GEMINI_API_BASE_URL = form_data.IMAGES_EDIT_GEMINI_API_BASE_URL
     request.app.state.config.IMAGES_EDIT_GEMINI_API_KEY = form_data.IMAGES_EDIT_GEMINI_API_KEY
 
@@ -280,6 +309,8 @@ async def update_config(request: Request, form_data: ImagesConfig, user=Depends(
         'IMAGES_OPENAI_API_KEY': request.app.state.config.IMAGES_OPENAI_API_KEY,
         'IMAGES_OPENAI_API_VERSION': request.app.state.config.IMAGES_OPENAI_API_VERSION,
         'IMAGES_OPENAI_API_PARAMS': request.app.state.config.IMAGES_OPENAI_API_PARAMS,
+        'IMAGES_MAGIC_API_BASE_URL': request.app.state.config.IMAGES_MAGIC_API_BASE_URL,
+        'IMAGES_MAGIC_API_KEY': request.app.state.config.IMAGES_MAGIC_API_KEY,
         'AUTOMATIC1111_BASE_URL': request.app.state.config.AUTOMATIC1111_BASE_URL,
         'AUTOMATIC1111_API_AUTH': request.app.state.config.AUTOMATIC1111_API_AUTH,
         'AUTOMATIC1111_PARAMS': request.app.state.config.AUTOMATIC1111_PARAMS,
@@ -297,6 +328,8 @@ async def update_config(request: Request, form_data: ImagesConfig, user=Depends(
         'IMAGES_EDIT_OPENAI_API_BASE_URL': request.app.state.config.IMAGES_EDIT_OPENAI_API_BASE_URL,
         'IMAGES_EDIT_OPENAI_API_KEY': request.app.state.config.IMAGES_EDIT_OPENAI_API_KEY,
         'IMAGES_EDIT_OPENAI_API_VERSION': request.app.state.config.IMAGES_EDIT_OPENAI_API_VERSION,
+        'IMAGES_EDIT_MAGIC_API_BASE_URL': request.app.state.config.IMAGES_EDIT_MAGIC_API_BASE_URL,
+        'IMAGES_EDIT_MAGIC_API_KEY': request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY,
         'IMAGES_EDIT_GEMINI_API_BASE_URL': request.app.state.config.IMAGES_EDIT_GEMINI_API_BASE_URL,
         'IMAGES_EDIT_GEMINI_API_KEY': request.app.state.config.IMAGES_EDIT_GEMINI_API_KEY,
         'IMAGES_EDIT_COMFYUI_BASE_URL': request.app.state.config.IMAGES_EDIT_COMFYUI_BASE_URL,
@@ -318,7 +351,8 @@ def get_automatic1111_api_auth(request: Request):
 
 @router.get('/config/url/verify')
 async def verify_url(request: Request, user=Depends(get_admin_user)):
-    if request.app.state.config.IMAGE_GENERATION_ENGINE == 'automatic1111':
+    engine = request.app.state.config.IMAGE_GENERATION_ENGINE
+    if engine == 'automatic1111':
         try:
             session = await get_session()
             async with session.get(
@@ -345,6 +379,25 @@ async def verify_url(request: Request, user=Depends(get_admin_user)):
                 return True
         except Exception:
             raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INVALID_URL)
+    elif engine == 'magic':
+        base_url = request.app.state.config.IMAGES_MAGIC_API_BASE_URL
+        if not base_url:
+            request.app.state.config.ENABLE_IMAGE_GENERATION = False
+            raise HTTPException(
+                status_code=400,
+                detail=ERROR_MESSAGES.INCORRECT_FORMAT('MAGIC proxy base URL is empty.'),
+            )
+        try:
+            session = await get_session()
+            async with session.get(
+                url=base_url.rstrip('/') + '/images/config',
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as r:
+                r.raise_for_status()
+                return True
+        except Exception:
+            log.warning('Failed to verify MAGIC image proxy URL', exc_info=True)
+            return False
     else:
         return True
 
@@ -352,6 +405,7 @@ async def verify_url(request: Request, user=Depends(get_admin_user)):
 @router.get('/models')
 async def get_models(request: Request, user=Depends(get_verified_user)):
     try:
+        engine = request.app.state.config.IMAGE_GENERATION_ENGINE
         if request.app.state.config.IMAGE_GENERATION_ENGINE == 'openai':
             return [
                 {'id': 'dall-e-2', 'name': 'DALL·E 2'},
@@ -362,6 +416,12 @@ async def get_models(request: Request, user=Depends(get_verified_user)):
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == 'gemini':
             return [
                 {'id': 'imagen-3.0-generate-002', 'name': 'imagen-3.0 generate-002'},
+            ]
+        elif engine == 'magic':
+            return [
+                {'id': 'dall-e-2', 'name': 'DALL·E 2'},
+                {'id': 'dall-e-3', 'name': 'DALL·E 3'},
+                {'id': 'gpt-image-1', 'name': 'GPT-IMAGE 1'},
             ]
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == 'comfyui':
             # TODO - get models from comfyui
@@ -469,6 +529,7 @@ async def get_image_data(data: str, headers=None):
         return None, None
 
 
+
 async def upload_image(request, image_data, content_type, metadata, user, db=None):
     image_format = mimetypes.guess_extension(content_type)
     file = UploadFile(
@@ -502,6 +563,18 @@ async def upload_image(request, image_data, content_type, metadata, user, db=Non
 
     url = request.app.url_path_for('get_file_content_by_id', id=file_item.id)
     return file_item, url
+
+
+def _build_magic_origin(base_url: str) -> Optional[str]:
+    """
+    从 MAGIC 基础 URL（可能是 http://host 或 http://host/api/v1）中提取 origin（scheme+host）。
+    """
+    if not base_url:
+        return None
+    parsed = urlparse(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 @router.post('/generations')
@@ -609,6 +682,92 @@ async def image_generations(
                 images.append({'url': url})
             return images
 
+        elif request.app.state.config.IMAGE_GENERATION_ENGINE == "magic":
+            base_url = request.app.state.config.IMAGES_MAGIC_API_BASE_URL
+            if not base_url:
+                raise HTTPException(
+                    status_code=400,
+                    detail=ERROR_MESSAGES.INCORRECT_FORMAT(
+                        "MAGIC proxy base URL is not configured."
+                    ),
+                )
+
+            headers = {
+                "Content-Type": "application/json",
+            }
+            if request.app.state.config.IMAGES_MAGIC_API_KEY:
+                headers["Authorization"] = f"Bearer {request.app.state.config.IMAGES_MAGIC_API_KEY}"
+
+            if ENABLE_FORWARD_USER_INFO_HEADERS:
+                headers = include_user_info_headers(headers, user)
+
+            proxy_url = base_url.rstrip("/") + "/images/generations"
+
+            payload = {
+                "model": form_data.model or model,
+                "prompt": form_data.prompt,
+                "n": form_data.n,
+                "size": form_data.size or request.app.state.config.IMAGE_SIZE,
+                "negative_prompt": form_data.negative_prompt,
+            }
+
+            session = await get_session()
+            async with session.post(
+                url=proxy_url,
+                json=payload,
+                headers=headers,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as r:
+                r.raise_for_status()
+                res = await r.json()
+
+            images: list[dict] = []
+            origin = _build_magic_origin(base_url)
+
+            # 兼容两种返回结构：
+            # 1）OpenAI 风格：{ "data": [ { "url": "..."} ] }
+            # 2）Open WebUI 风格：[{ "url": "/api/v1/files/..." }, ...] 或 { "images": [...] }
+            if isinstance(res, dict) and "data" in res:
+                # OpenAI 风格
+                for image in res["data"]:
+                    if image_url := image.get("url", None):
+                        image_data, content_type = await get_image_data(image_url, headers)
+                    else:
+                        image_data, content_type = await get_image_data(image["b64_json"])
+
+                    _, url = await upload_image(request, image_data, content_type, payload, user)
+                    images.append({"url": url})
+            else:
+                if isinstance(res, dict) and "images" in res:
+                    remote_images = res["images"]
+                elif isinstance(res, list):
+                    remote_images = res
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=ERROR_MESSAGES.DEFAULT(
+                            "Unexpected MAGIC proxy response format."
+                        ),
+                    )
+
+                for image in remote_images:
+                    image_url = image.get("url") if isinstance(image, dict) else None
+                    if not image_url:
+                        continue
+
+                    if image_url.startswith("http://") or image_url.startswith("https://"):
+                        remote_url = image_url
+                    elif origin:
+                        remote_url = origin + image_url
+                    else:
+                        remote_url = base_url.rstrip("/") + image_url
+
+                    image_data, content_type = await get_image_data(remote_url, headers)
+                    _, url = await upload_image(request, image_data, content_type, payload, user)
+                    images.append({"url": url})
+
+            return images
+
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == 'gemini':
             headers = {
                 'Content-Type': 'application/json',
@@ -621,6 +780,7 @@ async def image_generations(
                 request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD == ''
                 or request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD == 'predict'
             ):
+
                 model = f'{model}:predict'
                 data = {
                     'instances': {'prompt': form_data.prompt},
@@ -629,6 +789,7 @@ async def image_generations(
                         'outputOptions': {'mimeType': 'image/png'},
                     },
                 }
+
 
             elif request.app.state.config.IMAGES_GEMINI_ENDPOINT_METHOD == 'generateContent':
                 model = f'{model}:generateContent'
@@ -681,7 +842,7 @@ async def image_generations(
             if form_data.negative_prompt is not None:
                 data['negative_prompt'] = form_data.negative_prompt
 
-            form_data = ComfyUICreateImageForm(
+            comfy_form = ComfyUICreateImageForm(
                 **{
                     'workflow': ComfyUIWorkflow(
                         **{
@@ -718,6 +879,7 @@ async def image_generations(
                 )
                 images.append({'url': url})
             return images
+
         elif (
             request.app.state.config.IMAGE_GENERATION_ENGINE == 'automatic1111'
             or request.app.state.config.IMAGE_GENERATION_ENGINE == ''
@@ -933,6 +1095,124 @@ async def image_edits(
                 images.append({'url': url})
             return images
 
+        elif request.app.state.config.IMAGE_EDIT_ENGINE == 'magic':
+            # 1. 获取 B 实例配置
+            base_url = request.app.state.config.IMAGES_EDIT_MAGIC_API_BASE_URL
+            if not base_url:
+                raise HTTPException(
+                    status_code=400,
+                    detail=ERROR_MESSAGES.INCORRECT_FORMAT(
+                        "MAGIC proxy (edit) base URL is not configured."
+                    ),
+                )
+
+            headers = {}
+            if request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY:
+                headers["Authorization"] = f"Bearer {request.app.state.config.IMAGES_EDIT_MAGIC_API_KEY}"
+
+            if ENABLE_FORWARD_USER_INFO_HEADERS:
+                headers = include_user_info_headers(headers, user)
+
+            # 2. 预处理图片：将 URL/LocalPath 强制转换为 Base64
+            # Instance B 可能无法回访 Instance A 的 URL，所以必须由 A 转成 Base64 发送
+            # load_url_image 是本函数作用域内定义的闭包函数，直接调用即可
+
+            async def ensure_base64(img_data):
+                # 如果不是 data: 开头，说明可能是 URL 或路径，尝试转换
+                if isinstance(img_data, str) and not img_data.startswith("data:"):
+                    return await load_url_image(img_data)
+                return img_data
+
+            final_image_payload = None
+            if isinstance(form_data.image, str):
+                final_image_payload = await ensure_base64(form_data.image)
+            elif isinstance(form_data.image, list):
+                final_image_payload = [await ensure_base64(img) for img in form_data.image]
+
+            # 3. 构造目标 URL (Open WebUI 原生接口)
+            proxy_url = base_url.rstrip("/") + "/images/edit"
+
+            # 4. 构造 JSON Payload (完全符合 Open WebUI EditImageForm)
+            # 此时 final_image_payload 必定是 Base64 字符串
+            form_payload = {
+                "image": final_image_payload,
+                "prompt": form_data.prompt,
+                "n": form_data.n if form_data.n else 1,
+                "size": size if size else request.app.state.config.IMAGE_EDIT_SIZE
+            #    **({"model": model} if model else {}),
+            #    **({"negative_prompt": form_data.negative_prompt} if getattr(form_data, "negative_prompt", None) else {}),
+            }
+
+            payload = {
+                "form_data": form_payload,
+                "metadata": metadata or {},   # metadata 之前在你的函数中已做 metadata = metadata or {}
+            }
+
+            # 5. 发送 JSON 请求 (Open WebUI 间通信使用 JSON)
+            session = await get_session()
+            async with session.post(
+                url=proxy_url,
+                headers=headers,
+                json=payload,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as r:
+                r.raise_for_status()
+                res = await r.json()
+
+            # 6. 处理响应 (下载 B 返回的图片并存入 A 本地)
+            remote_images = []
+            if isinstance(res, list):
+                remote_images = res
+            elif isinstance(res, dict):
+                # 兼容 {data: ...} 或 {images: ...}
+                remote_images = res.get("images", res.get("data", []))
+
+            images = []
+            origin = _build_magic_origin(base_url)
+
+            for image_item in remote_images:
+                # 获取远程 URL 或 Base64
+                remote_url = image_item.get("url")
+                b64_json = image_item.get("b64_json")
+
+                try:
+                    if b64_json:
+                        # 如果 B 返回了 Base64 (最优情况)
+                        image_data, content_type = await get_image_data(b64_json)
+                    elif remote_url:
+                        # 如果 B 返回了 URL，计算绝对路径并下载
+                        target_url = remote_url
+                        if not (remote_url.startswith("http://") or remote_url.startswith("https://")):
+                            if origin:
+                                target_url = origin + remote_url
+                            else:
+                                target_url = base_url.rstrip("/") + remote_url
+
+                        # 下载图片
+                        image_data, content_type = await get_image_data(target_url, headers)
+                    else:
+                        image_data, content_type = None, None
+
+                    if image_data:
+                        # 存入 A 的本地存储
+                        # 清理 metadata 中的大图数据，避免数据库臃肿
+                        safe_metadata = payload.copy()
+                        if "image" in safe_metadata:
+                            safe_metadata["image"] = "base64_hidden"
+
+                        _, url = await upload_image(request, image_data, content_type, safe_metadata, user)
+                        images.append({"url": url})
+                    else:
+                        # 如果无法获取数据，回退到原始 URL (虽然前端可能无法显示)
+                        if remote_url:
+                            images.append({"url": remote_url})
+
+                except Exception as e:
+                    log.error(f"Error processing remote image from Magic backend: {e}")
+                    continue
+
+            return images
+
         elif request.app.state.config.IMAGE_EDIT_ENGINE == 'gemini':
             headers = {
                 'Content-Type': 'application/json',
@@ -1020,7 +1300,7 @@ async def image_edits(
                 **({'n': form_data.n} if form_data.n else {}),
             }
 
-            form_data = ComfyUIEditImageForm(
+            comfy_form = ComfyUIEditImageForm(
                 **{
                     'workflow': ComfyUIWorkflow(
                         **{

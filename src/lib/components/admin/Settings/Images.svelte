@@ -100,8 +100,8 @@
 
 	const updateConfigHandler = async () => {
 		if (
-			config.IMAGE_GENERATION_ENGINE === 'automatic1111' &&
-			config.AUTOMATIC1111_BASE_URL === ''
+				config.IMAGE_GENERATION_ENGINE === 'automatic1111' &&
+				config.AUTOMATIC1111_BASE_URL === ''
 		) {
 			toast.error($i18n.t('AUTOMATIC1111 Base URL is required.'));
 			config.ENABLE_IMAGE_GENERATION = false;
@@ -117,6 +117,11 @@
 			config.ENABLE_IMAGE_GENERATION = false;
 
 			return null;
+		} else if (config.IMAGE_GENERATION_ENGINE === 'magic' && config.IMAGES_MAGIC_API_KEY === '') {
+			toast.error($i18n.t('Magic API Key is required.'));
+			config.ENABLE_IMAGE_GENERATION = false;
+
+			return null;
 		} else if (config.IMAGE_GENERATION_ENGINE === 'gemini' && config.IMAGES_GEMINI_API_KEY === '') {
 			toast.error($i18n.t('Gemini API Key is required.'));
 			config.ENABLE_IMAGE_GENERATION = false;
@@ -127,14 +132,14 @@
 		const res = await updateConfig(localStorage.token, {
 			...config,
 			AUTOMATIC1111_PARAMS:
-				typeof config.AUTOMATIC1111_PARAMS === 'string' && config.AUTOMATIC1111_PARAMS.trim() !== ''
-					? JSON.parse(config.AUTOMATIC1111_PARAMS)
-					: {},
+					typeof config.AUTOMATIC1111_PARAMS === 'string' && config.AUTOMATIC1111_PARAMS.trim() !== ''
+							? JSON.parse(config.AUTOMATIC1111_PARAMS)
+							: {},
 			IMAGES_OPENAI_API_PARAMS:
-				typeof config.IMAGES_OPENAI_API_PARAMS === 'string' &&
-				config.IMAGES_OPENAI_API_PARAMS.trim() !== ''
-					? JSON.parse(config.IMAGES_OPENAI_API_PARAMS)
-					: {}
+					typeof config.IMAGES_OPENAI_API_PARAMS === 'string' &&
+					config.IMAGES_OPENAI_API_PARAMS.trim() !== ''
+							? JSON.parse(config.IMAGES_OPENAI_API_PARAMS)
+							: {}
 		}).catch((error) => {
 			toast.error(`${error}`);
 			return null;
@@ -178,7 +183,7 @@
 					type: node.type,
 					key: node.key,
 					node_ids:
-						node.node_ids.trim() === '' ? [] : node.node_ids.split(',').map((id) => id.trim())
+							node.node_ids.trim() === '' ? [] : node.node_ids.split(',').map((id) => id.trim())
 				};
 			});
 		}
@@ -195,7 +200,7 @@
 					type: node.type,
 					key: node.key,
 					node_ids:
-						node.node_ids.trim() === '' ? [] : node.node_ids.split(',').map((id) => id.trim())
+							node.node_ids.trim() === '' ? [] : node.node_ids.split(',').map((id) => id.trim())
 				};
 			});
 		}
@@ -245,9 +250,9 @@
 			if (config.IMAGES_EDIT_COMFYUI_WORKFLOW) {
 				try {
 					config.IMAGES_EDIT_COMFYUI_WORKFLOW = JSON.stringify(
-						JSON.parse(config.IMAGES_EDIT_COMFYUI_WORKFLOW),
-						null,
-						2
+							JSON.parse(config.IMAGES_EDIT_COMFYUI_WORKFLOW),
+							null,
+							2
 					);
 				} catch (e) {
 					console.error(e);
@@ -255,18 +260,18 @@
 			}
 
 			config.IMAGES_OPENAI_API_PARAMS =
-				typeof config.IMAGES_OPENAI_API_PARAMS === 'object'
-					? JSON.stringify(config.IMAGES_OPENAI_API_PARAMS ?? {}, null, 2)
-					: config.IMAGES_OPENAI_API_PARAMS;
+					typeof config.IMAGES_OPENAI_API_PARAMS === 'object'
+							? JSON.stringify(config.IMAGES_OPENAI_API_PARAMS ?? {}, null, 2)
+							: config.IMAGES_OPENAI_API_PARAMS;
 
 			config.AUTOMATIC1111_PARAMS =
-				typeof config.AUTOMATIC1111_PARAMS === 'object'
-					? JSON.stringify(config.AUTOMATIC1111_PARAMS ?? {}, null, 2)
-					: config.AUTOMATIC1111_PARAMS;
+					typeof config.AUTOMATIC1111_PARAMS === 'object'
+							? JSON.stringify(config.AUTOMATIC1111_PARAMS ?? {}, null, 2)
+							: config.AUTOMATIC1111_PARAMS;
 
 			REQUIRED_EDIT_WORKFLOW_NODES = REQUIRED_EDIT_WORKFLOW_NODES.map((node) => {
 				const n =
-					config.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES.find((n) => n.type === node.type) ?? node;
+						config.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES.find((n) => n.type === node.type) ?? node;
 				console.debug(n);
 
 				return {
@@ -280,8 +285,8 @@
 </script>
 
 <form
-	class="flex flex-col h-full justify-between space-y-3 text-sm"
-	on:submit|preventDefault={async () => {
+		class="flex flex-col h-full justify-between space-y-3 text-sm"
+		on:submit|preventDefault={async () => {
 		saveHandler();
 	}}
 >
@@ -322,11 +327,11 @@
 
 								<Tooltip content={$i18n.t('Enter Model ID')} placement="top-start">
 									<input
-										list="model-list"
-										class=" text-right text-sm bg-transparent outline-hidden max-w-full w-52"
-										bind:value={config.IMAGE_GENERATION_MODEL}
-										placeholder={$i18n.t('Select a model')}
-										required
+											list="model-list"
+											class=" text-right text-sm bg-transparent outline-hidden max-w-full w-52"
+											bind:value={config.IMAGE_GENERATION_MODEL}
+											placeholder={$i18n.t('Select a model')}
+											required
 									/>
 
 									<datalist id="model-list">
@@ -348,9 +353,9 @@
 
 								<Tooltip content={$i18n.t('Enter Image Size (e.g. 512x512)')} placement="top-start">
 									<input
-										class="  text-right text-sm bg-transparent outline-hidden max-w-full w-52"
-										placeholder={$i18n.t('Enter Image Size (e.g. 512x512)')}
-										bind:value={config.IMAGE_SIZE}
+											class="  text-right text-sm bg-transparent outline-hidden max-w-full w-52"
+											placeholder={$i18n.t('Enter Image Size (e.g. 512x512)')}
+											bind:value={config.IMAGE_SIZE}
 									/>
 								</Tooltip>
 							</div>
@@ -366,14 +371,14 @@
 									</div>
 
 									<Tooltip
-										content={$i18n.t('Enter Number of Steps (e.g. 50)')}
-										placement="top-start"
+											content={$i18n.t('Enter Number of Steps (e.g. 50)')}
+											placement="top-start"
 									>
 										<input
-											class=" text-right text-sm bg-transparent outline-hidden"
-											placeholder={$i18n.t('Enter Number of Steps (e.g. 50)')}
-											bind:value={config.IMAGE_STEPS}
-											required
+												class=" text-right text-sm bg-transparent outline-hidden"
+												placeholder={$i18n.t('Enter Number of Steps (e.g. 50)')}
+												bind:value={config.IMAGE_STEPS}
+												required
 										/>
 									</Tooltip>
 								</div>
@@ -407,6 +412,7 @@
 								placeholder={$i18n.t('Select Engine')}
 							>
 								<option value="openai">{$i18n.t('Default (Open AI)')}</option>
+								<option value="magic">{$i18n.t('Magic')}</option>
 								<option value="comfyui">{$i18n.t('ComfyUI')}</option>
 								<option value="automatic1111">{$i18n.t('Automatic1111')}</option>
 								<option value="gemini">{$i18n.t('Gemini')}</option>
@@ -426,9 +432,9 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<input
-											class="w-full text-sm bg-transparent outline-hidden text-right"
-											placeholder={$i18n.t('API Base URL')}
-											bind:value={config.IMAGES_OPENAI_API_BASE_URL}
+												class="w-full text-sm bg-transparent outline-hidden text-right"
+												placeholder={$i18n.t('API Base URL')}
+												bind:value={config.IMAGES_OPENAI_API_BASE_URL}
 										/>
 									</div>
 								</div>
@@ -446,10 +452,10 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<SensitiveInput
-											inputClassName="text-right w-full"
-											placeholder={$i18n.t('API Key')}
-											bind:value={config.IMAGES_OPENAI_API_KEY}
-											required={false}
+												inputClassName="text-right w-full"
+												placeholder={$i18n.t('API Key')}
+												bind:value={config.IMAGES_OPENAI_API_KEY}
+												required={false}
 										/>
 									</div>
 								</div>
@@ -467,9 +473,9 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<input
-											class="w-full text-sm bg-transparent outline-hidden text-right"
-											placeholder={$i18n.t('API Version')}
-											bind:value={config.IMAGES_OPENAI_API_VERSION}
+												class="w-full text-sm bg-transparent outline-hidden text-right"
+												placeholder={$i18n.t('API Version')}
+												bind:value={config.IMAGES_OPENAI_API_VERSION}
 										/>
 									</div>
 								</div>
@@ -487,14 +493,74 @@
 							<div class="mt-1.5 flex w-full">
 								<div class="flex-1 mr-2">
 									<Textarea
-										className="rounded-lg w-full py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-										bind:value={config.IMAGES_OPENAI_API_PARAMS}
-										placeholder={$i18n.t('Enter additional parameters in JSON format')}
-										minSize={100}
+											className="rounded-lg w-full py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											bind:value={config.IMAGES_OPENAI_API_PARAMS}
+											placeholder={$i18n.t('Enter additional parameters in JSON format')}
+											minSize={100}
 									/>
 								</div>
 							</div>
 						</div>
+					{:else if config?.IMAGE_GENERATION_ENGINE === 'magic'}
+							<div class="mb-2.5">
+								<div class="flex w-full justify-between items-center">
+									<div class="text-xs pr-2 shrink-0">
+										<div class="">
+											{$i18n.t('Magic API Base URL')}
+										</div>
+									</div>
+
+									<div class="flex w-full">
+										<div class="flex-1">
+											<input
+													class="w-full text-sm bg-transparent outline-hidden text-right"
+													placeholder={$i18n.t('API Base URL')}
+													bind:value={config.IMAGES_MAGIC_API_BASE_URL}
+											/>
+										</div>
+									</div>
+								</div>
+							</div>
+
+							<div class="mb-2.5">
+								<div class="flex w-full justify-between items-center">
+									<div class="text-xs pr-2 shrink-0">
+										<div class="">
+											{$i18n.t('Magic API Key')}
+										</div>
+									</div>
+
+									<div class="flex w-full">
+										<div class="flex-1">
+											<SensitiveInput
+													inputClassName="text-right w-full"
+													placeholder={$i18n.t('API Key')}
+													bind:value={config.IMAGES_MAGIC_API_KEY}
+													required={false}
+											/>
+										</div>
+									</div>
+								</div>
+							</div>
+							<div class="mb-2.5">
+								<div class="flex w-full justify-between items-center">
+									<div class="text-xs pr-2 shrink-0">
+										<div class="">
+											{$i18n.t('Additional Parameters')}
+										</div>
+									</div>
+								</div>
+								<div class="mt-1.5 flex w-full">
+									<div class="flex-1 mr-2">
+									<Textarea
+											className="rounded-lg w-full py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											bind:value={config.IMAGES_OPENAI_API_PARAMS}
+											placeholder={$i18n.t('Enter additional parameters in JSON format')}
+											minSize={100}
+									/>
+									</div>
+								</div>
+							</div>
 					{:else if (config?.IMAGE_GENERATION_ENGINE ?? 'automatic1111') === 'automatic1111'}
 						<div class="mb-2.5">
 							<div class="flex w-full justify-between items-center">
@@ -507,16 +573,16 @@
 								<div class="flex w-full">
 									<div class="flex-1 mr-2">
 										<input
-											class="w-full text-sm bg-transparent outline-hidden text-right"
-											placeholder={$i18n.t('Enter URL (e.g. http://127.0.0.1:7860/)')}
-											bind:value={config.AUTOMATIC1111_BASE_URL}
+												class="w-full text-sm bg-transparent outline-hidden text-right"
+												placeholder={$i18n.t('Enter URL (e.g. http://127.0.0.1:7860/)')}
+												bind:value={config.AUTOMATIC1111_BASE_URL}
 										/>
 									</div>
 									<button
-										class="  transition"
-										type="button"
-										aria-label="verify connection"
-										on:click={async () => {
+											class="  transition"
+											type="button"
+											aria-label="verify connection"
+											on:click={async () => {
 											await updateConfigHandler();
 											const res = await verifyConfigUrl(localStorage.token).catch((error) => {
 												toast.error(`${error}`);
@@ -529,15 +595,15 @@
 										}}
 									>
 										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											viewBox="0 0 20 20"
-											fill="currentColor"
-											class="w-4 h-4"
+												xmlns="http://www.w3.org/2000/svg"
+												viewBox="0 0 20 20"
+												fill="currentColor"
+												class="w-4 h-4"
 										>
 											<path
-												fill-rule="evenodd"
-												d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
-												clip-rule="evenodd"
+													fill-rule="evenodd"
+													d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
+													clip-rule="evenodd"
 											/>
 										</svg>
 									</button>
@@ -547,9 +613,9 @@
 							<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
 								{$i18n.t('Include `--api` flag when running stable-diffusion-webui')}
 								<a
-									class=" text-gray-300 font-medium"
-									href="https://github.com/AUTOMATIC1111/stable-diffusion-webui/discussions/3734"
-									target="_blank"
+										class=" text-gray-300 font-medium"
+										href="https://github.com/AUTOMATIC1111/stable-diffusion-webui/discussions/3734"
+										target="_blank"
 								>
 									{$i18n.t('(e.g. `sh webui.sh --api`)')}
 								</a>
@@ -567,10 +633,10 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<SensitiveInput
-											inputClassName="text-right w-full"
-											placeholder={$i18n.t('Enter api auth string (e.g. username:password)')}
-											bind:value={config.AUTOMATIC1111_API_AUTH}
-											required={false}
+												inputClassName="text-right w-full"
+												placeholder={$i18n.t('Enter api auth string (e.g. username:password)')}
+												bind:value={config.AUTOMATIC1111_API_AUTH}
+												required={false}
 										/>
 									</div>
 								</div>
@@ -579,13 +645,13 @@
 							<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
 								{$i18n.t('Include `--api-auth` flag when running stable-diffusion-webui')}
 								<a
-									class=" text-gray-300 font-medium"
-									href="https://github.com/AUTOMATIC1111/stable-diffusion-webui/discussions/13993"
-									target="_blank"
+										class=" text-gray-300 font-medium"
+										href="https://github.com/AUTOMATIC1111/stable-diffusion-webui/discussions/13993"
+										target="_blank"
 								>
 									{$i18n
-										.t('(e.g. `sh webui.sh --api --api-auth username_password`)')
-										.replace('_', ':')}
+											.t('(e.g. `sh webui.sh --api --api-auth username_password`)')
+											.replace('_', ':')}
 								</a>
 							</div>
 						</div>
@@ -601,10 +667,10 @@
 							<div class="mt-1.5 flex w-full">
 								<div class="flex-1 mr-2">
 									<Textarea
-										className="rounded-lg w-full py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
-										bind:value={config.AUTOMATIC1111_PARAMS}
-										placeholder={$i18n.t('Enter additional parameters in JSON format')}
-										minSize={100}
+											className="rounded-lg w-full py-2 px-3 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden"
+											bind:value={config.AUTOMATIC1111_PARAMS}
+											placeholder={$i18n.t('Enter additional parameters in JSON format')}
+											minSize={100}
 									/>
 								</div>
 							</div>
@@ -621,16 +687,16 @@
 								<div class="flex w-full">
 									<div class="flex-1 mr-2">
 										<input
-											class="w-full text-sm bg-transparent outline-hidden text-right"
-											placeholder={$i18n.t('Enter URL (e.g. http://127.0.0.1:7860/)')}
-											bind:value={config.COMFYUI_BASE_URL}
+												class="w-full text-sm bg-transparent outline-hidden text-right"
+												placeholder={$i18n.t('Enter URL (e.g. http://127.0.0.1:7860/)')}
+												bind:value={config.COMFYUI_BASE_URL}
 										/>
 									</div>
 									<button
-										class="  rounded-lg transition"
-										type="button"
-										aria-label="verify connection"
-										on:click={async () => {
+											class="  rounded-lg transition"
+											type="button"
+											aria-label="verify connection"
+											on:click={async () => {
 											await updateConfigHandler();
 											const res = await verifyConfigUrl(localStorage.token).catch((error) => {
 												toast.error(`${error}`);
@@ -643,15 +709,15 @@
 										}}
 									>
 										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											viewBox="0 0 20 20"
-											fill="currentColor"
-											class="w-4 h-4"
+												xmlns="http://www.w3.org/2000/svg"
+												viewBox="0 0 20 20"
+												fill="currentColor"
+												class="w-4 h-4"
 										>
 											<path
-												fill-rule="evenodd"
-												d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
-												clip-rule="evenodd"
+													fill-rule="evenodd"
+													d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
+													clip-rule="evenodd"
 											/>
 										</svg>
 									</button>
@@ -670,10 +736,10 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<SensitiveInput
-											inputClassName="text-right w-full"
-											placeholder={$i18n.t('sk-1234')}
-											bind:value={config.COMFYUI_API_KEY}
-											required={false}
+												inputClassName="text-right w-full"
+												placeholder={$i18n.t('sk-1234')}
+												bind:value={config.COMFYUI_API_KEY}
+												required={false}
 										/>
 									</div>
 								</div>
@@ -682,11 +748,11 @@
 
 						<div class="mb-2.5">
 							<input
-								id="upload-comfyui-workflow-input"
-								hidden
-								type="file"
-								accept=".json"
-								on:change={(e) => {
+									id="upload-comfyui-workflow-input"
+									hidden
+									type="file"
+									accept=".json"
+									on:change={(e) => {
 									const file = e.target.files[0];
 									const reader = new FileReader();
 
@@ -709,10 +775,10 @@
 									<div class="flex-1 mr-2 justify-end flex gap-1">
 										{#if config.COMFYUI_WORKFLOW}
 											<button
-												class="text-xs text-gray-700 dark:text-gray-400 underline"
-												type="button"
-												aria-label={$i18n.t('Edit workflow.json content')}
-												on:click={() => {
+													class="text-xs text-gray-700 dark:text-gray-400 underline"
+													type="button"
+													aria-label={$i18n.t('Edit workflow.json content')}
+													on:click={() => {
 													// open code editor modal
 													showComfyUIWorkflowEditor = true;
 												}}
@@ -723,10 +789,10 @@
 
 										<Tooltip content={$i18n.t('Click here to upload a workflow.json file.')}>
 											<button
-												class="text-xs text-gray-700 dark:text-gray-400 underline"
-												type="button"
-												aria-label={$i18n.t('Click here to upload a workflow.json file.')}
-												on:click={() => {
+													class="text-xs text-gray-700 dark:text-gray-400 underline"
+													type="button"
+													aria-label={$i18n.t('Click here to upload a workflow.json file.')}
+													on:click={() => {
 													document.getElementById('upload-comfyui-workflow-input')?.click();
 												}}
 											>
@@ -739,13 +805,13 @@
 
 							<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
 								<CodeEditorModal
-									bind:show={showComfyUIWorkflowEditor}
-									value={config.COMFYUI_WORKFLOW}
-									lang="json"
-									onChange={(e) => {
+										bind:show={showComfyUIWorkflowEditor}
+										value={config.COMFYUI_WORKFLOW}
+										lang="json"
+										onChange={(e) => {
 										config.COMFYUI_WORKFLOW = e;
 									}}
-									onSave={() => {
+										onSave={() => {
 										console.log('Saved');
 									}}
 								/>
@@ -784,10 +850,10 @@
 												<div class="">
 													<Tooltip content={$i18n.t('Input Key (e.g. text, unet_name, steps)')}>
 														<input
-															class="py-1 w-24 text-xs bg-transparent outline-hidden"
-															placeholder={$i18n.t('Key')}
-															bind:value={node.key}
-															required
+																class="py-1 w-24 text-xs bg-transparent outline-hidden"
+																placeholder={$i18n.t('Key')}
+																bind:value={node.key}
+																required
 														/>
 													</Tooltip>
 												</div>
@@ -796,13 +862,13 @@
 
 												<div class="w-full">
 													<Tooltip
-														content={$i18n.t('Comma separated Node Ids (e.g. 1 or 1,2)')}
-														placement="top-start"
+															content={$i18n.t('Comma separated Node Ids (e.g. 1 or 1,2)')}
+															placement="top-start"
 													>
 														<input
-															class="w-full py-1 text-xs bg-transparent outline-hidden"
-															placeholder={$i18n.t('Node Ids')}
-															bind:value={node.node_ids}
+																class="w-full py-1 text-xs bg-transparent outline-hidden"
+																placeholder={$i18n.t('Node Ids')}
+																bind:value={node.node_ids}
 														/>
 													</Tooltip>
 												</div>
@@ -828,9 +894,9 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<input
-											class="w-full text-sm bg-transparent outline-hidden text-right"
-											placeholder={$i18n.t('API Base URL')}
-											bind:value={config.IMAGES_GEMINI_API_BASE_URL}
+												class="w-full text-sm bg-transparent outline-hidden text-right"
+												placeholder={$i18n.t('API Base URL')}
+												bind:value={config.IMAGES_GEMINI_API_BASE_URL}
 										/>
 									</div>
 								</div>
@@ -848,10 +914,10 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<SensitiveInput
-											inputClassName="text-right w-full"
-											placeholder={$i18n.t('API Key')}
-											bind:value={config.IMAGES_GEMINI_API_KEY}
-											required={true}
+												inputClassName="text-right w-full"
+												placeholder={$i18n.t('API Key')}
+												bind:value={config.IMAGES_GEMINI_API_KEY}
+												required={true}
 										/>
 									</div>
 								</div>
@@ -907,10 +973,10 @@
 
 								<Tooltip content={$i18n.t('Enter Model ID')} placement="top-start">
 									<input
-										list="model-list"
-										class="text-right text-sm bg-transparent outline-hidden max-w-full w-52"
-										bind:value={config.IMAGE_EDIT_MODEL}
-										placeholder={$i18n.t('Select a model')}
+											list="model-list"
+											class="text-right text-sm bg-transparent outline-hidden max-w-full w-52"
+											bind:value={config.IMAGE_EDIT_MODEL}
+											placeholder={$i18n.t('Select a model')}
 									/>
 
 									<datalist id="model-list">
@@ -932,9 +998,9 @@
 
 								<Tooltip content={$i18n.t('Enter Image Size (e.g. 512x512)')} placement="top-start">
 									<input
-										class="text-right text-sm bg-transparent outline-hidden max-w-full w-52"
-										placeholder={$i18n.t('Enter Image Size (e.g. 512x512)')}
-										bind:value={config.IMAGE_EDIT_SIZE}
+											class="text-right text-sm bg-transparent outline-hidden max-w-full w-52"
+											placeholder={$i18n.t('Enter Image Size (e.g. 512x512)')}
+											bind:value={config.IMAGE_EDIT_SIZE}
 									/>
 								</Tooltip>
 							</div>
@@ -955,6 +1021,7 @@
 								placeholder={$i18n.t('Select Engine')}
 							>
 								<option value="openai">{$i18n.t('Default (Open AI)')}</option>
+								<option value="magic">{$i18n.t('Magic')}</option>
 								<option value="comfyui">{$i18n.t('ComfyUI')}</option>
 								<option value="gemini">{$i18n.t('Gemini')}</option>
 							</select>
@@ -973,9 +1040,9 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<input
-											class="w-full text-sm bg-transparent outline-hidden text-right"
-											placeholder={$i18n.t('API Base URL')}
-											bind:value={config.IMAGES_EDIT_OPENAI_API_BASE_URL}
+												class="w-full text-sm bg-transparent outline-hidden text-right"
+												placeholder={$i18n.t('API Base URL')}
+												bind:value={config.IMAGES_EDIT_OPENAI_API_BASE_URL}
 										/>
 									</div>
 								</div>
@@ -993,10 +1060,10 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<SensitiveInput
-											inputClassName="text-right w-full"
-											placeholder={$i18n.t('API Key')}
-											bind:value={config.IMAGES_EDIT_OPENAI_API_KEY}
-											required={false}
+												inputClassName="text-right w-full"
+												placeholder={$i18n.t('API Key')}
+												bind:value={config.IMAGES_EDIT_OPENAI_API_KEY}
+												required={false}
 										/>
 									</div>
 								</div>
@@ -1014,14 +1081,56 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<input
-											class="w-full text-sm bg-transparent outline-hidden text-right"
-											placeholder={$i18n.t('API Version')}
-											bind:value={config.IMAGES_EDIT_OPENAI_API_VERSION}
+												class="w-full text-sm bg-transparent outline-hidden text-right"
+												placeholder={$i18n.t('API Version')}
+												bind:value={config.IMAGES_EDIT_OPENAI_API_VERSION}
 										/>
 									</div>
 								</div>
 							</div>
 						</div>
+					{:else if config?.IMAGE_EDIT_ENGINE === 'magic'}
+							<div class="mb-2.5">
+								<div class="flex w-full justify-between items-center">
+									<div class="text-xs pr-2 shrink-0">
+										<div class="">
+											{$i18n.t('Magic API Base URL')}
+										</div>
+									</div>
+
+									<div class="flex w-full">
+										<div class="flex-1">
+											<input
+													class="w-full text-sm bg-transparent outline-hidden text-right"
+													placeholder={$i18n.t('API Base URL')}
+													bind:value={config.IMAGES_EDIT_MAGIC_API_BASE_URL}
+											/>
+										</div>
+									</div>
+								</div>
+							</div>
+
+							<div class="mb-2.5">
+								<div class="flex w-full justify-between items-center">
+									<div class="text-xs pr-2 shrink-0">
+										<div class="">
+											{$i18n.t('Magic API Key')}
+										</div>
+									</div>
+
+									<div class="flex w-full">
+										<div class="flex-1">
+											<SensitiveInput
+													inputClassName="text-right w-full"
+													placeholder={$i18n.t('API Key')}
+													bind:value={config.IMAGES_EDIT_MAGIC_API_KEY}
+													required={false}
+											/>
+										</div>
+									</div>
+								</div>
+							</div>
+
 					{:else if config?.IMAGE_EDIT_ENGINE === 'comfyui'}
 						<div class="mb-2.5">
 							<div class="flex w-full justify-between items-center">
@@ -1034,16 +1143,16 @@
 								<div class="flex w-full">
 									<div class="flex-1 mr-2">
 										<input
-											class="w-full text-sm bg-transparent outline-hidden text-right"
-											placeholder={$i18n.t('Enter URL (e.g. http://127.0.0.1:7860/)')}
-											bind:value={config.IMAGES_EDIT_COMFYUI_BASE_URL}
+												class="w-full text-sm bg-transparent outline-hidden text-right"
+												placeholder={$i18n.t('Enter URL (e.g. http://127.0.0.1:7860/)')}
+												bind:value={config.IMAGES_EDIT_COMFYUI_BASE_URL}
 										/>
 									</div>
 									<button
-										class="  transition"
-										type="button"
-										aria-label="verify connection"
-										on:click={async () => {
+											class="  transition"
+											type="button"
+											aria-label="verify connection"
+											on:click={async () => {
 											await updateConfigHandler();
 											const res = await verifyConfigUrl(localStorage.token).catch((error) => {
 												toast.error(`${error}`);
@@ -1056,15 +1165,15 @@
 										}}
 									>
 										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											viewBox="0 0 20 20"
-											fill="currentColor"
-											class="w-4 h-4"
+												xmlns="http://www.w3.org/2000/svg"
+												viewBox="0 0 20 20"
+												fill="currentColor"
+												class="w-4 h-4"
 										>
 											<path
-												fill-rule="evenodd"
-												d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
-												clip-rule="evenodd"
+													fill-rule="evenodd"
+													d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
+													clip-rule="evenodd"
 											/>
 										</svg>
 									</button>
@@ -1083,10 +1192,10 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<SensitiveInput
-											inputClassName="text-right w-full"
-											placeholder={$i18n.t('sk-1234')}
-											bind:value={config.IMAGES_EDIT_COMFYUI_API_KEY}
-											required={false}
+												inputClassName="text-right w-full"
+												placeholder={$i18n.t('sk-1234')}
+												bind:value={config.IMAGES_EDIT_COMFYUI_API_KEY}
+												required={false}
 										/>
 									</div>
 								</div>
@@ -1095,11 +1204,11 @@
 
 						<div class="mb-2.5">
 							<input
-								id="upload-comfyui-edit-workflow-input"
-								hidden
-								type="file"
-								accept=".json"
-								on:change={(e) => {
+									id="upload-comfyui-edit-workflow-input"
+									hidden
+									type="file"
+									accept=".json"
+									on:change={(e) => {
 									const file = e.target.files[0];
 									const reader = new FileReader();
 
@@ -1122,10 +1231,10 @@
 									<div class="flex-1 mr-2 justify-end flex gap-1">
 										{#if config.IMAGES_EDIT_COMFYUI_WORKFLOW}
 											<button
-												class="text-xs text-gray-700 dark:text-gray-400 underline"
-												type="button"
-												aria-label={$i18n.t('Edit workflow.json content')}
-												on:click={() => {
+													class="text-xs text-gray-700 dark:text-gray-400 underline"
+													type="button"
+													aria-label={$i18n.t('Edit workflow.json content')}
+													on:click={() => {
 													// open code editor modal
 													showComfyUIEditWorkflowEditor = true;
 												}}
@@ -1136,10 +1245,10 @@
 
 										<Tooltip content={$i18n.t('Click here to upload a workflow.json file.')}>
 											<button
-												class="text-xs text-gray-700 dark:text-gray-400 underline"
-												type="button"
-												aria-label={$i18n.t('Click here to upload a workflow.json file.')}
-												on:click={() => {
+													class="text-xs text-gray-700 dark:text-gray-400 underline"
+													type="button"
+													aria-label={$i18n.t('Click here to upload a workflow.json file.')}
+													on:click={() => {
 													document.getElementById('upload-comfyui-edit-workflow-input')?.click();
 												}}
 											>
@@ -1152,13 +1261,13 @@
 
 							<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
 								<CodeEditorModal
-									bind:show={showComfyUIEditWorkflowEditor}
-									value={config.IMAGES_EDIT_COMFYUI_WORKFLOW}
-									lang="json"
-									onChange={(e) => {
+										bind:show={showComfyUIEditWorkflowEditor}
+										value={config.IMAGES_EDIT_COMFYUI_WORKFLOW}
+										lang="json"
+										onChange={(e) => {
 										config.IMAGES_EDIT_COMFYUI_WORKFLOW = e;
 									}}
-									onSave={() => {
+										onSave={() => {
 										console.log('Saved');
 									}}
 								/>
@@ -1189,10 +1298,10 @@
 												<div class="">
 													<Tooltip content={$i18n.t('Input Key (e.g. text, unet_name, steps)')}>
 														<input
-															class="py-1 w-24 text-xs bg-transparent outline-hidden"
-															placeholder={$i18n.t('Key')}
-															bind:value={node.key}
-															required
+																class="py-1 w-24 text-xs bg-transparent outline-hidden"
+																placeholder={$i18n.t('Key')}
+																bind:value={node.key}
+																required
 														/>
 													</Tooltip>
 												</div>
@@ -1201,13 +1310,13 @@
 
 												<div class="w-full">
 													<Tooltip
-														content={$i18n.t('Comma separated Node Ids (e.g. 1 or 1,2)')}
-														placement="top-start"
+															content={$i18n.t('Comma separated Node Ids (e.g. 1 or 1,2)')}
+															placement="top-start"
 													>
 														<input
-															class="w-full py-1 text-xs bg-transparent outline-hidden"
-															placeholder={$i18n.t('Node Ids')}
-															bind:value={node.node_ids}
+																class="w-full py-1 text-xs bg-transparent outline-hidden"
+																placeholder={$i18n.t('Node Ids')}
+																bind:value={node.node_ids}
 														/>
 													</Tooltip>
 												</div>
@@ -1233,9 +1342,9 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<input
-											class="w-full text-sm bg-transparent outline-hidden text-right"
-											placeholder={$i18n.t('API Base URL')}
-											bind:value={config.IMAGES_EDIT_GEMINI_API_BASE_URL}
+												class="w-full text-sm bg-transparent outline-hidden text-right"
+												placeholder={$i18n.t('API Base URL')}
+												bind:value={config.IMAGES_EDIT_GEMINI_API_BASE_URL}
 										/>
 									</div>
 								</div>
@@ -1253,10 +1362,10 @@
 								<div class="flex w-full">
 									<div class="flex-1">
 										<SensitiveInput
-											inputClassName="text-right w-full"
-											placeholder={$i18n.t('API Key')}
-											bind:value={config.IMAGES_EDIT_GEMINI_API_KEY}
-											required={true}
+												inputClassName="text-right w-full"
+												placeholder={$i18n.t('API Key')}
+												bind:value={config.IMAGES_EDIT_GEMINI_API_KEY}
+												required={true}
 										/>
 									</div>
 								</div>
@@ -1265,6 +1374,7 @@
 					{/if}
 				</div>
 			</div>
+
 		{/if}
 	</div>
 
@@ -1273,8 +1383,8 @@
 			class="px-3.5 py-1.5 text-sm font-medium bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full flex items-center gap-2 whitespace-nowrap {loading
 				? ' cursor-not-allowed'
 				: ''}"
-			type="submit"
-			disabled={loading}
+				type="submit"
+				disabled={loading}
 		>
 			{$i18n.t('Save')}
 
