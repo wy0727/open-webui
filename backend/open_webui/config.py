@@ -3124,6 +3124,12 @@ TASK_MODEL_EXTERNAL = ConfigVar(
     os.getenv('TASK_MODEL_EXTERNAL', ''),
 )
 
+IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL = ConfigVar(
+    'IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL',
+    'task.image_prompt.model.external',
+    os.getenv('IMAGE_PROMPT_GENERATION_MODEL_EXTERNAL', ''),
+)
+
 TITLE_GENERATION_PROMPT_TEMPLATE = ConfigVar(
     'TITLE_GENERATION_PROMPT_TEMPLATE',
     'task.title.prompt_template',
